@@ -30,7 +30,10 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest", "pytest-qt"]
+# napari-dask-ndmeasure itself doesn't pin a Qt binding at runtime (avoids
+# conflicting with whatever the host napari install already brought in), but
+# the test suite drives real Qt widgets and needs one.
+dev = ["pytest", "pytest-qt", "PyQt5"]
 
 [project.entry-points."napari.manifest"]
 napari-dask-ndmeasure = "napari_dask_ndmeasure:napari.yaml"
