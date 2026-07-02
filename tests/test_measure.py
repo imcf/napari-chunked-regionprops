@@ -3,6 +3,7 @@ import numpy as np
 import pytest
 
 from napari_dask_ndmeasure._measure import (
+    _compute_with_progress,
     _ensure_chunked,
     _needs_rechunk,
     available_stats,
@@ -168,6 +169,30 @@ def test_iter_measure_labels_yields_progress_then_returns_table():
         assert 0 <= done <= total
 
     assert table.loc[1, "area"] == 4
+
+
+def test_compute_with_progress_yield_count_bounded_not_per_task():
+    # Regression test: an earlier version pushed one progress yield per
+    # finished dask task. On a graph with thousands of fine-grained tasks
+    # (e.g. measuring 100k+ objects), that floods a cross-thread Qt signal
+    # faster than a GUI thread can repaint, so the displayed progress falls
+    # further and further behind and can look permanently stuck even after
+    # the real computation finished. Progress is now sampled on a timer
+    # instead, so the yield count must stay small regardless of how many
+    # actual tasks the graph has.
+    many_tasks = da.zeros((2000,), chunks=(1,)).sum()
+    gen = _compute_with_progress([many_tasks], num_workers=4)
+    progress = []
+    try:
+        while True:
+            progress.append(next(gen))
+    except StopIteration as stop:
+        (result,) = stop.value
+
+    assert result == 0
+    final_total = progress[-1][1]
+    assert final_total > 100  # the graph genuinely had many tasks
+    assert len(progress) < 50  # but yields stayed bounded, not per-task
 
 
 def test_iter_measure_labels_return_value_matches_measure_labels():

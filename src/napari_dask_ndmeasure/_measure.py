@@ -10,7 +10,6 @@ from __future__ import annotations
 
 import math
 import os
-import queue
 import threading
 from typing import Any, Generator, Sequence
 
@@ -66,35 +65,53 @@ def _needs_rechunk(arr: da.Array) -> bool:
     return math.prod(arr.chunksize) * arr.dtype.itemsize > _MAX_CHUNK_BYTES
 
 
-class _QueueProgress(Callback):
-    """Dask diagnostics callback that pushes ``(done, total)`` task counts.
+class _ProgressState:
+    """Mutable ``(done, total)`` box, written in place from dask worker threads.
+
+    Plain attribute assignment rather than a queue — CPython's GIL makes a
+    single attribute write atomic enough for a poller on another thread to
+    always see *some* consistent, if possibly one-write-stale, pair. See
+    :func:`_compute_with_progress` for why this (state + poll) shape is
+    used instead of pushing an event per task.
+    """
+
+    __slots__ = ("done", "total")
+
+    def __init__(self):
+        self.done = 0
+        self.total = 0
+
+
+class _StateProgress(Callback):
+    """Dask diagnostics callback that writes live task counts into a state box.
 
     Mirrors ``dask.diagnostics.progress.ProgressBar``'s own bookkeeping
     (``len(state["finished"])`` vs. every task across ``ready``/``waiting``/
-    ``running``/``finished``) but pushes onto a queue instead of drawing a
-    terminal bar, so a caller on a different thread can consume real,
-    per-task progress from a running ``dask.compute()`` call.
+    ``running``/``finished``).
     """
 
-    def __init__(self, q: "queue.Queue[tuple[int, int]]"):
-        self._queue = q
+    def __init__(self, state: "_ProgressState"):
+        self._state = state
 
     def _start_state(self, dsk, state):
-        self._emit(state)
+        self._update(state)
 
     def _posttask(self, key, result, dsk, state, worker_id):
-        self._emit(state)
+        self._update(state)
 
-    def _emit(self, state):
+    def _update(self, state):
         done = len(state["finished"])
         total = (
             sum(len(state[k]) for k in ("ready", "waiting", "running")) + done
         )
-        self._queue.put((done, total))
+        self._state.done = done
+        self._state.total = total
 
 
 def _compute_with_progress(
-    lazy_values: Sequence[Any], num_workers: int
+    lazy_values: Sequence[Any],
+    num_workers: int,
+    poll_interval: float = 0.15,
 ) -> Generator[tuple[int, int], None, tuple]:
     """Run ``dask.compute(*lazy_values)`` in a background thread, yielding progress.
 
@@ -105,14 +122,27 @@ def _compute_with_progress(
         same way a single :func:`dask.compute` call always does).
     num_workers : int
         Thread count for the computation.
+    poll_interval : float, optional
+        Seconds between progress yields (default 0.15). Progress is sampled
+        on a timer rather than pushed once per finished task — a graph with
+        tens of thousands of fine-grained tasks (e.g. a very high object
+        count) would otherwise fire a cross-thread Qt signal per task
+        faster than a GUI thread can repaint, so the displayed progress
+        falls further and further behind the real state as the backlog
+        grows, eventually looking frozen at a stale value even though the
+        computation itself finished. Sampling at a fixed, small rate keeps
+        the number of yields bounded by wall-clock time instead of by task
+        count.
 
     Yields
     ------
     tuple of (int, int)
-        ``(done, total)`` dask task counts, pushed by :class:`_QueueProgress`
-        every time a task finishes. ``total`` can grow between yields early
-        on, as dask discovers more of the graph — treat it as "at least
-        this many", not a fixed denominator from the first yield.
+        ``(done, total)`` dask task counts, sampled at *poll_interval*
+        (plus a final yield for whatever the state was the instant the
+        computation finished, even if that's less than *poll_interval*
+        since the last one). ``total`` can grow between yields early on, as
+        dask discovers more of the graph — treat it as "at least this
+        many", not a fixed denominator from the first yield.
 
     Returns
     -------
@@ -120,29 +150,35 @@ def _compute_with_progress(
         The computed results, in the same order as *lazy_values* — exactly
         what ``dask.compute(*lazy_values)`` would have returned directly.
     """
-    q: "queue.Queue[tuple[int, int] | None]" = queue.Queue()
+    state = _ProgressState()
     result_box: dict[str, tuple] = {}
     error_box: dict[str, BaseException] = {}
+    done_event = threading.Event()
 
     def _run():
         try:
-            with _QueueProgress(q):
+            with _StateProgress(state):
                 result_box["value"] = dask.compute(
                     *lazy_values, num_workers=num_workers
                 )
         except BaseException as exc:  # re-raised on the caller's thread below
             error_box["error"] = exc
         finally:
-            q.put(None)  # sentinel: no more progress coming
+            done_event.set()
 
     thread = threading.Thread(target=_run, daemon=True)
     thread.start()
-    while True:
-        item = q.get()
-        if item is None:
-            break
-        yield item
+    last = None
+    while not done_event.is_set():
+        current = (state.done, state.total)
+        if current != last:
+            yield current
+            last = current
+        done_event.wait(poll_interval)
     thread.join()
+    final = (state.done, state.total)
+    if final != last:
+        yield final
     if "error" in error_box:
         raise error_box["error"]
     return result_box["value"]
