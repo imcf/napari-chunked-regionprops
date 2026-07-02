@@ -1,0 +1,51 @@
+[build-system]
+requires = ["hatchling", "hatch-vcs"]
+build-backend = "hatchling.build"
+
+[project]
+name = "napari-dask-ndmeasure"
+dynamic = ["version"]
+description = "Out-of-core regionprops-style measurements for huge labelled images in napari"
+readme = "README.md"
+license = { text = "GPL-3.0-only" }
+authors = [{ name = "IMCF Basel" }]
+keywords = ["napari", "image processing", "regionprops", "dask", "bioimage"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Framework :: napari",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: GNU General Public License v3 (GPLv3)",
+    "Programming Language :: Python :: 3",
+    "Topic :: Scientific/Engineering :: Image Processing",
+]
+requires-python = ">=3.9"
+dependencies = [
+    "napari>=0.7.1",
+    "dask[array]>=2023.1.0",
+    "dask-image>=2023.3.0",
+    "numpy>=1.24",
+    "pandas>=1.5",
+    "qtpy",
+    "magicgui",
+]
+
+[project.optional-dependencies]
+dev = ["pytest", "pytest-qt"]
+
+[project.entry-points."napari.manifest"]
+napari-dask-ndmeasure = "napari_dask_ndmeasure:napari.yaml"
+
+[project.urls]
+Homepage = "https://github.com/imcf/napari-dask-ndmeasure"
+
+[tool.hatch.version]
+source = "vcs"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/napari_dask_ndmeasure"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 80
