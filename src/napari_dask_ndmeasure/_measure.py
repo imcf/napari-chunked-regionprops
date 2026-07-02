@@ -76,10 +76,14 @@ def measure_labels(
     4
     """
     if image.shape != labels.shape:
-        raise ValueError(f"shape mismatch: image={image.shape} labels={labels.shape}")
+        raise ValueError(
+            f"shape mismatch: image={image.shape} labels={labels.shape}"
+        )
     unknown = set(stats) - set(_STATS)
     if unknown:
-        raise ValueError(f"unknown stats {sorted(unknown)}; choose from {available_stats()}")
+        raise ValueError(
+            f"unknown stats {sorted(unknown)}; choose from {available_stats()}"
+        )
 
     import dask_image.ndmeasure as ndm
 
@@ -107,7 +111,9 @@ def measure_labels(
     if scale is not None:
         scale = np.asarray(scale, dtype="float64")
         if "area" in table.columns:
-            table["area_um3" if len(scale) == 3 else "area_um2"] = table["area"] * np.prod(scale)
+            table["area_um3" if len(scale) == 3 else "area_um2"] = table[
+                "area"
+            ] * np.prod(scale)
         for prefix in ("centroid", "weighted_centroid"):
             cols = [c for c in table.columns if c.startswith(f"{prefix}_")]
             for c, s in zip(cols, scale):

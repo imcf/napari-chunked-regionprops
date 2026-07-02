@@ -46,6 +46,7 @@ class MeasureWidget(QWidget):
         super().__init__()
         self._viewer = napari_viewer
         self._table = None  # last computed pandas.DataFrame
+        self._worker = None  # keeps the running thread_worker alive
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -86,7 +87,9 @@ class MeasureWidget(QWidget):
         for name in available_stats():
             item = QListWidgetItem(name)
             item.setFlags(item.flags() | Qt.ItemIsUserCheckable)
-            item.setCheckState(Qt.Checked if name in DEFAULT_STATS else Qt.Unchecked)
+            item.setCheckState(
+                Qt.Checked if name in DEFAULT_STATS else Qt.Unchecked
+            )
             self.stats_list.addItem(item)
         stats_layout.addWidget(self.stats_list)
         layout.addWidget(stats_box)
@@ -154,11 +157,15 @@ class MeasureWidget(QWidget):
 
         image_layer, labels_layer = self._selected_layers()
         if image_layer is None or labels_layer is None:
-            QMessageBox.warning(self, "Missing layers", "Pick an Image and a Labels layer.")
+            QMessageBox.warning(
+                self, "Missing layers", "Pick an Image and a Labels layer."
+            )
             return
         stats = self._selected_stats()
         if not stats:
-            QMessageBox.warning(self, "No measurements selected", "Check at least one.")
+            QMessageBox.warning(
+                self, "No measurements selected", "Check at least one."
+            )
             return
 
         level = self.level_spin.value()
@@ -171,12 +178,16 @@ class MeasureWidget(QWidget):
 
         @thread_worker
         def _run():
-            return measure_labels(image_data, labels_data, stats=stats, scale=scale)
+            return measure_labels(
+                image_data, labels_data, stats=stats, scale=scale
+            )
 
-        worker = _run()
-        worker.returned.connect(self._on_measured)
-        worker.errored.connect(self._on_measure_error)
-        worker.start()
+        # Keep a reference on self — an unreferenced worker can be garbage
+        # collected mid-run, silently killing the thread before it finishes.
+        self._worker = _run()
+        self._worker.returned.connect(self._on_measured)
+        self._worker.errored.connect(self._on_measure_error)
+        self._worker.start()
 
     def _on_measure_error(self, exc: Exception):
         self.measure_btn.setEnabled(True)
@@ -206,12 +217,16 @@ class MeasureWidget(QWidget):
         for row, (label_id, values) in enumerate(table.iterrows()):
             self.results_table.setItem(row, 0, QTableWidgetItem(str(label_id)))
             for col, value in enumerate(values, start=1):
-                self.results_table.setItem(row, col, QTableWidgetItem(f"{value:.4g}"))
+                self.results_table.setItem(
+                    row, col, QTableWidgetItem(f"{value:.4g}")
+                )
 
     def _on_save_clicked(self):
         if self._table is None or self._table.empty:
             return
-        path, _ = QFileDialog.getSaveFileName(self, "Save measurements", "measurements.csv", "CSV (*.csv)")
+        path, _ = QFileDialog.getSaveFileName(
+            self, "Save measurements", "measurements.csv", "CSV (*.csv)"
+        )
         if path:
             self._table.to_csv(path)
 

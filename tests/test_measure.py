@@ -42,7 +42,9 @@ def test_measure_labels_only_requested_stats():
 
 def test_measure_labels_scale_adds_um_columns():
     img, lab = _synthetic()
-    table = measure_labels(img, lab, stats=("area", "centroid"), scale=(0.5, 0.2))
+    table = measure_labels(
+        img, lab, stats=("area", "centroid"), scale=(0.5, 0.2)
+    )
     assert table.loc[1, "area_um2"] == pytest.approx(4 * 0.5 * 0.2)
     assert table.loc[1, "centroid_y_um"] == pytest.approx(0.5 * 0.5)
     assert table.loc[1, "centroid_x_um"] == pytest.approx(0.5 * 0.2)
