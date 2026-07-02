@@ -21,8 +21,12 @@ jobs:
       # napari's vispy canvas needs a real (software) GL context, not just a
       # Qt platform plugin — QT_QPA_PLATFORM=offscreen alone isn't enough and
       # fails with "'NoneType' object has no attribute 'decode'" deep in
-      # vispy's glGetString. This sets up Xvfb + Mesa properly.
+      # vispy's glGetString. qt: true additionally installs the xcb/dbus libs
+      # PyQt5 needs to even construct a QApplication under Xvfb (without it,
+      # pytest-qt's qapp fixture aborts before any test runs).
       - uses: pyvista/setup-headless-display-action@v3
+        with:
+          qt: true
 
       - name: Install
         run: |
