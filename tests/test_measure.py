@@ -2,7 +2,11 @@ import dask.array as da
 import numpy as np
 import pytest
 
-from napari_dask_ndmeasure._measure import available_stats, measure_labels
+from napari_dask_ndmeasure._measure import (
+    available_stats,
+    iter_measure_labels,
+    measure_labels,
+)
 
 
 def _synthetic():
@@ -75,3 +79,42 @@ def test_available_stats_matches_measure_labels_options():
     # every advertised stat should actually be usable
     table = measure_labels(img, lab, stats=available_stats())
     assert not table.empty
+
+
+def test_measure_labels_rechunks_a_single_giant_chunk():
+    # A bare numpy array, wrapped naively, becomes ONE chunk covering the
+    # whole array -> dask_image.ndmeasure would then need the whole thing in
+    # RAM. measure_labels must rechunk internally regardless.
+    img = da.asarray(np.arange(400 * 400, dtype="float32").reshape(400, 400))
+    lab = da.asarray(np.ones((400, 400), dtype="int32"))
+    assert img.numblocks == (1, 1)  # sanity: reproduces the bug precondition
+
+    table = measure_labels(img, lab, stats=("area",))
+    assert table.loc[1, "area"] == 400 * 400
+
+
+def _drain(gen):
+    """Collect every yielded value from *gen*, plus its final return value."""
+    progress = []
+    try:
+        while True:
+            progress.append(next(gen))
+    except StopIteration as stop:
+        return progress, stop.value
+
+
+def test_iter_measure_labels_yields_progress_then_returns_table():
+    img, lab = _synthetic()
+    gen = iter_measure_labels(img, lab, stats=("area", "mean_intensity"))
+    progress, table = _drain(gen)
+
+    assert [p[:2] for p in progress] == [(1, 2), (2, 2)]
+    assert [p[2] for p in progress] == ["area", "mean_intensity"]
+    assert table.loc[1, "area"] == 4
+
+
+def test_iter_measure_labels_return_value_matches_measure_labels():
+    img, lab = _synthetic()
+    _, table_from_iter = _drain(iter_measure_labels(img, lab))
+    table_from_wrapper = measure_labels(img, lab)
+    assert table_from_iter.equals(table_from_wrapper)

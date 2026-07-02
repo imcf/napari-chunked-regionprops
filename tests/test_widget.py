@@ -46,9 +46,75 @@ def test_widget_measure_end_to_end(qtbot, make_napari_viewer):
     assert list(widget._table.index) == [1, 2]
     assert widget.results_table.rowCount() == 2
     assert widget.save_btn.isEnabled()
+    # progress bar reached its max and got hidden again once done
+    assert widget.progress_bar.value() == widget.progress_bar.maximum()
+    assert not widget.progress_bar.isVisible()
+    assert "(cached)" not in widget.status_label.text()
 
     labels_layer = viewer.layers["labels"]
     assert "area" in labels_layer.features.columns
+
+
+def test_widget_measure_second_run_is_a_cache_hit(
+    qtbot, make_napari_viewer, monkeypatch
+):
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+    first_table = widget._table
+    assert len(widget._cache) == 1
+
+    # Break the underlying computation so a second *real* run would error —
+    # a cache hit must not touch it at all. monkeypatch auto-reverts this
+    # after the test, unlike a raw module-attribute assignment (an earlier
+    # version of this test left iter_measure_labels broken for every test
+    # that ran afterward, which hung them instead of failing cleanly).
+    def _boom(*a, **k):
+        raise AssertionError("should not recompute on a cache hit")
+
+    monkeypatch.setattr(
+        "napari_dask_ndmeasure._widget.iter_measure_labels", _boom
+    )
+
+    widget._table = None
+    widget._on_measure_clicked()  # same layers/stats/level -> cache hit, synchronous
+
+    assert widget._table is not None
+    assert widget._table.equals(first_table)
+    assert "(cached)" in widget.status_label.text()
+    assert len(widget._cache) == 1  # unchanged, no new entry
+
+
+def test_widget_default_csv_name_uses_labels_layer(make_napari_viewer):
+    # Deliberately doesn't touch QFileDialog at all — mocking a Qt static
+    # dialog method is fragile (ponytail: an earlier version of this test
+    # hung forever because the mock silently didn't take effect and the
+    # real, un-clickable headless dialog opened instead). _default_csv_name
+    # is pure/dialog-free by design specifically so this is safely testable.
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+
+    assert widget._default_csv_name() == "labels_measurements.csv"
+
+
+def test_widget_save_csv_writes_table(qtbot, make_napari_viewer, tmp_path):
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+
+    target = tmp_path / "out.csv"
+    widget._table.to_csv(
+        target
+    )  # exactly what _on_save_clicked does with a path
+    assert target.exists()
+    assert "area" in target.read_text()
 
 
 def test_widget_level_range_updates_for_multiscale(make_napari_viewer):

@@ -14,6 +14,7 @@ from qtpy.QtWidgets import (
     QListWidget,
     QListWidgetItem,
     QMessageBox,
+    QProgressBar,
     QPushButton,
     QSpinBox,
     QTableWidget,
@@ -22,10 +23,11 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
-from ._measure import DEFAULT_STATS, available_stats, measure_labels
+from ._measure import DEFAULT_STATS, available_stats, iter_measure_labels
 
 if TYPE_CHECKING:
     import napari
+    import pandas as pd
 
 
 def _level_data(layer, level: int):
@@ -47,6 +49,17 @@ class MeasureWidget(QWidget):
         self._viewer = napari_viewer
         self._table = None  # last computed pandas.DataFrame
         self._worker = None  # keeps the running thread_worker alive
+        # Session-only cache keyed by (id(image data), id(labels data),
+        # level, stats, scale) -> result table. id()-based: valid as long as
+        # the layer (and its underlying data object) is still alive, which
+        # is also exactly the right invalidation — a reloaded/replaced layer
+        # gets a new data object and a fresh id, so it's never a stale hit.
+        # ponytail: doesn't survive closing the widget/viewer (in-memory
+        # only) and never evicts — fine for a session's worth of measurement
+        # results (tiny compared to the images). Upgrade path: a disk cache
+        # keyed by (zarr store path, component, level, stats) if cross-
+        # session reuse on very expensive measurements is ever needed.
+        self._cache: dict[tuple, "pd.DataFrame"] = {}
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -97,6 +110,10 @@ class MeasureWidget(QWidget):
         self.measure_btn = QPushButton("Measure")
         self.measure_btn.clicked.connect(self._on_measure_clicked)
         layout.addWidget(self.measure_btn)
+
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setVisible(False)
+        layout.addWidget(self.progress_bar)
 
         self.status_label = QLabel("")
         layout.addWidget(self.status_label)
@@ -153,6 +170,12 @@ class MeasureWidget(QWidget):
         return tuple(stats)
 
     def _on_measure_clicked(self):
+        """Validate the current selection, then run (or reuse a cached) measurement.
+
+        A cache hit populates the results table immediately, with no
+        background thread. Otherwise a threaded, progress-reporting
+        measurement is started — see :meth:`_on_progress`/:meth:`_on_measured`.
+        """
         from napari.qt.threading import thread_worker
 
         image_layer, labels_layer = self._selected_layers()
@@ -173,31 +196,82 @@ class MeasureWidget(QWidget):
         labels_data = _level_data(labels_layer, level)
         scale = tuple(labels_layer.scale[-labels_data.ndim :])
 
+        cache_key = (id(image_data), id(labels_data), level, stats, scale)
+        cached = self._cache.get(cache_key)
+        if cached is not None:
+            self._on_measured(cached, cache_key=cache_key, from_cache=True)
+            return
+
         self.measure_btn.setEnabled(False)
+        self.progress_bar.setVisible(True)
+        self.progress_bar.setRange(0, len(stats))
+        self.progress_bar.setValue(0)
         self.status_label.setText("Measuring…")
 
         @thread_worker
         def _run():
-            return measure_labels(
+            result = yield from iter_measure_labels(
                 image_data, labels_data, stats=stats, scale=scale
             )
+            return result
 
         # Keep a reference on self — an unreferenced worker can be garbage
         # collected mid-run, silently killing the thread before it finishes.
         self._worker = _run()
-        self._worker.returned.connect(self._on_measured)
+        self._worker.yielded.connect(self._on_progress)
+        self._worker.returned.connect(
+            lambda table: self._on_measured(table, cache_key=cache_key)
+        )
         self._worker.errored.connect(self._on_measure_error)
         self._worker.start()
 
+    def _on_progress(self, progress: tuple[int, int, str]) -> None:
+        """Update the progress bar from an ``iter_measure_labels`` yield.
+
+        Parameters
+        ----------
+        progress : tuple of (int, int, str)
+            ``(done, total, stat_name)`` as yielded by
+            :func:`napari_dask_ndmeasure._measure.iter_measure_labels`.
+        """
+        done, total, stat_name = progress
+        self.progress_bar.setMaximum(total)
+        self.progress_bar.setValue(done)
+        self.status_label.setText(f"Measuring… {stat_name} ({done}/{total})")
+
     def _on_measure_error(self, exc: Exception):
         self.measure_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
         self.status_label.setText("")
         QMessageBox.critical(self, "Measurement failed", str(exc))
 
-    def _on_measured(self, table):
+    def _on_measured(
+        self,
+        table: "pd.DataFrame",
+        *,
+        cache_key: tuple,
+        from_cache: bool = False,
+    ) -> None:
+        """Finish a measurement: cache it, populate the table, update the layer.
+
+        Parameters
+        ----------
+        table : pandas.DataFrame
+            The measurement result, indexed by label id.
+        cache_key : tuple
+            Key this result should be (or already is) stored under in
+            :attr:`_cache`.
+        from_cache : bool, optional
+            Whether *table* came from the cache rather than a fresh
+            computation (skips re-inserting it). Default ``False``.
+        """
         self.measure_btn.setEnabled(True)
+        self.progress_bar.setVisible(False)
+        if not from_cache:
+            self._cache[cache_key] = table
         self._table = table
-        self.status_label.setText(f"{len(table)} objects measured.")
+        suffix = " (cached)" if from_cache else ""
+        self.status_label.setText(f"{len(table)} objects measured.{suffix}")
         self._populate_table(table)
         self.save_btn.setEnabled(not table.empty)
 
@@ -221,11 +295,25 @@ class MeasureWidget(QWidget):
                     row, col, QTableWidgetItem(f"{value:.4g}")
                 )
 
-    def _on_save_clicked(self):
+    def _default_csv_name(self) -> str:
+        """Suggested CSV filename, derived from the selected Labels layer.
+
+        Returns
+        -------
+        str
+            ``"<labels layer name>_measurements.csv"``, or
+            ``"measurements.csv"`` if no Labels layer is selected.
+        """
+        _, labels_layer = self._selected_layers()
+        stem = labels_layer.name if labels_layer is not None else "measurements"
+        return f"{stem}_measurements.csv"
+
+    def _on_save_clicked(self) -> None:
+        """Prompt for a path and write the last measurement table as CSV."""
         if self._table is None or self._table.empty:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save measurements", "measurements.csv", "CSV (*.csv)"
+            self, "Save measurements", self._default_csv_name(), "CSV (*.csv)"
         )
         if path:
             self._table.to_csv(path)

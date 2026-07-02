@@ -28,12 +28,24 @@ pip install napari-dask-ndmeasure
    measurements come out in µm — not just pixels).
 2. `Plugins → Dask ndmeasure → Measure (dask-image)`.
 3. Pick the Image and Labels layer, check the measurements you want, hit
-   **Measure**.
-4. Browse the table in the dock widget, or **Save CSV…**.
+   **Measure**. A progress bar tracks which stat is currently computing; the
+   UI stays responsive throughout (measurement runs in a background thread).
+4. Browse the table in the dock widget, or **Save CSV…** (defaults to
+   `<labels layer name>_measurements.csv`).
 
 The measured table is also written to the Labels layer's `.features`, so you
 can immediately color the layer by any measured value via napari's built-in
 "color by feature" for Labels layers.
+
+Re-clicking **Measure** with the same layers/level/stats is instant — results
+are cached for the session (in memory; cleared when the widget/viewer
+closes).
+
+Every array is rechunked to a bounded size before measuring, regardless of
+how the layer was loaded — a plain numpy-backed layer (or any dask array
+that isn't already sensibly chunked) would otherwise become **one giant
+chunk**, silently forcing the whole volume into RAM during computation. This
+is what actually made the out-of-core promise real for non-pyramid layers.
 
 ## Measurements
 
