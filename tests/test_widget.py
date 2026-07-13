@@ -299,3 +299,36 @@ def test_widget_image_click_selects_table_row(
 
     assert labels_layer.selected_label == 2
     assert widget.results_table.item(widget.results_table.currentRow(), 0).text() == "2"
+
+
+def test_widget_reload_csv_from_path(qtbot, make_napari_viewer, monkeypatch, tmp_path):
+    """A CSV from a prior run (possibly another machine/OS) loads via the
+    path box, without recomputing — the whole point being it works even
+    when the disk-cache manifest's key wouldn't match."""
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+    first_table = widget._table
+    saved_path = tmp_path / "labels_measurements.csv"
+    assert saved_path.exists()
+
+    fresh_widget = MeasureWidget(viewer)
+
+    def _boom(*a, **k):
+        raise AssertionError("reload must not recompute")
+
+    monkeypatch.setattr(
+        "napari_chunked_regionprops._widget.iter_measure_labels", _boom
+    )
+
+    fresh_widget.reload_path_edit.setText(str(saved_path))
+    fresh_widget._on_reload_clicked()
+
+    assert fresh_widget._table is not None
+    assert list(fresh_widget._table.index) == list(first_table.index)
+    assert "loaded from" in fresh_widget.status_label.text()
+    assert "area" in viewer.layers["labels"].features.columns

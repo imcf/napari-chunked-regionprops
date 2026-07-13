@@ -16,6 +16,7 @@ from qtpy.QtWidgets import (
     QGroupBox,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMessageBox,
@@ -142,6 +143,22 @@ class MeasureWidget(QWidget):
         layers_layout.addLayout(row)
 
         layout.addWidget(layers_box)
+
+        reload_box = QGroupBox("Reload previous results")
+        reload_layout = QHBoxLayout()
+        reload_box.setLayout(reload_layout)
+        self.reload_path_edit = QLineEdit()
+        self.reload_path_edit.setPlaceholderText(
+            "path to a previous *_measurements.csv"
+        )
+        reload_layout.addWidget(self.reload_path_edit)
+        self.reload_browse_btn = QPushButton("Browse…")
+        self.reload_browse_btn.clicked.connect(self._on_reload_browse_clicked)
+        reload_layout.addWidget(self.reload_browse_btn)
+        self.reload_btn = QPushButton("Load")
+        self.reload_btn.clicked.connect(self._on_reload_clicked)
+        reload_layout.addWidget(self.reload_btn)
+        layout.addWidget(reload_box)
 
         stats_box = QGroupBox("Measurements")
         stats_layout = QVBoxLayout()
@@ -567,6 +584,39 @@ class MeasureWidget(QWidget):
         if path:
             self._table.to_csv(path)
             self._save_dir = Path(path).parent
+
+    def _on_reload_browse_clicked(self) -> None:
+        path, _ = QFileDialog.getOpenFileName(
+            self, "Load measurements", "", "CSV (*.csv)"
+        )
+        if path:
+            self.reload_path_edit.setText(path)
+
+    def _on_reload_clicked(self) -> None:
+        """Load a CSV written by a *previous* run (this or another machine).
+
+        Bypasses the disk-manifest cache entirely — no key matching, no
+        assumption about paths or cwd being the same as when it was
+        written. Point it at any ``*_measurements.csv`` and it repopulates
+        the table and (if a matching Labels layer is selected) the
+        image-click/row-click wiring, without recomputing anything.
+        """
+        path = self.reload_path_edit.text().strip()
+        if not path:
+            return
+        try:
+            table = pd.read_csv(path, index_col="label")
+        except (OSError, ValueError) as exc:
+            QMessageBox.critical(self, "Load failed", str(exc))
+            return
+
+        self._table = table
+        self._populate_table(table)
+        self.save_btn.setEnabled(not table.empty)
+        self.status_label.setText(f"{len(table)} objects loaded from {path}.")
+
+        _, labels_layer = self._selected_layers()
+        self._wire_labels_features(labels_layer, table)
 
 
 def _restore(combo: QComboBox, previous: str) -> None:
