@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from typing import TYPE_CHECKING
 
 import numpy as np
+import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
     QComboBox,
@@ -30,7 +32,6 @@ from ._measure import DEFAULT_STATS, available_stats, iter_measure_labels
 
 if TYPE_CHECKING:
     import napari
-    import pandas as pd
 
 
 def _level_data(layer, level: int):
@@ -84,6 +85,10 @@ class MeasureWidget(QWidget):
     automatically, with no save dialog — see :meth:`_auto_save_csv`. Use
     **Save CSV…** to choose a different location; that location is then
     remembered for subsequent automatic saves too.
+
+    A disk-backed manifest (see :meth:`_disk_cache_key`) also lets a fresh
+    widget instance — e.g. after closing and reopening napari — reuse a
+    prior measurement's CSV instead of recomputing it.
     """
 
     def __init__(self, napari_viewer: "napari.viewer.Viewer"):
@@ -98,9 +103,8 @@ class MeasureWidget(QWidget):
         # gets a new data object and a fresh id, so it's never a stale hit.
         # ponytail: doesn't survive closing the widget/viewer (in-memory
         # only) and never evicts — fine for a session's worth of measurement
-        # results (tiny compared to the images). Upgrade path: a disk cache
-        # keyed by (zarr store path, component, level, stats) if cross-
-        # session reuse on very expensive measurements is ever needed.
+        # results (tiny compared to the images). Cross-session reuse is
+        # handled separately by the disk manifest (_disk_cache_key et al.).
         self._cache: dict[tuple, "pd.DataFrame"] = {}
         # Where auto-save (see _on_measured) writes CSVs. None -> cwd, until
         # the user manually picks a location once via "Save CSV…", which is
@@ -259,8 +263,26 @@ class MeasureWidget(QWidget):
         cache_key = (id(image_data), id(labels_data), level, stats, scale)
         cached = self._cache.get(cache_key)
         if cached is not None:
-            self._on_measured(cached, cache_key=cache_key, from_cache=True)
+            self._on_measured(
+                cached, cache_key=cache_key, cache_note="session cache"
+            )
             return
+
+        disk_key = self._disk_cache_key(
+            image_layer, labels_layer, image_data, labels_data, level, stats, scale
+        )
+        disk_entry = self._load_disk_cache().get(disk_key)
+        if disk_entry is not None and Path(disk_entry).exists():
+            try:
+                table = pd.read_csv(disk_entry, index_col="label")
+            except (OSError, ValueError):
+                table = None
+            if table is not None:
+                self._cache[cache_key] = table
+                self._on_measured(
+                    table, cache_key=cache_key, cache_note="disk cache"
+                )
+                return
 
         ids_hint = _sequential_ids_hint(labels_layer, level)
 
@@ -299,7 +321,9 @@ class MeasureWidget(QWidget):
         self._worker = _run()
         self._worker.yielded.connect(self._on_progress)
         self._worker.returned.connect(
-            lambda table: self._on_measured(table, cache_key=cache_key)
+            lambda table: self._on_measured(
+                table, cache_key=cache_key, disk_key=disk_key
+            )
         )
         self._worker.errored.connect(self._on_measure_error)
         self._worker.start()
@@ -336,7 +360,8 @@ class MeasureWidget(QWidget):
         table: "pd.DataFrame",
         *,
         cache_key: tuple,
-        from_cache: bool = False,
+        cache_note: str | None = None,
+        disk_key: str | None = None,
     ) -> None:
         """Finish a measurement: cache it, populate the table, update the layer.
 
@@ -347,16 +372,23 @@ class MeasureWidget(QWidget):
         cache_key : tuple
             Key this result should be (or already is) stored under in
             :attr:`_cache`.
-        from_cache : bool, optional
-            Whether *table* came from the cache rather than a fresh
-            computation (skips re-inserting it). Default ``False``.
+        cache_note : str, optional
+            If *table* came from a cache rather than a fresh computation,
+            a short label for the status text (e.g. ``"session cache"``)
+            and a signal to skip re-inserting it into :attr:`_cache`
+            (already there). ``None`` (default) means this was a fresh
+            computation.
+        disk_key : str, optional
+            Disk-manifest key (see :meth:`_disk_cache_key`) to record
+            *table*'s saved CSV path under, so a future widget instance
+            can reuse it. Only meaningful for a fresh computation.
         """
         self.measure_btn.setEnabled(True)
         self.progress_bar.setVisible(False)
-        if not from_cache:
+        if cache_note is None:
             self._cache[cache_key] = table
         self._table = table
-        suffix = " (cached)" if from_cache else ""
+        suffix = f" ({cache_note})" if cache_note else ""
         status = f"{len(table)} objects measured.{suffix}"
         self._populate_table(table)
         self.save_btn.setEnabled(not table.empty)
@@ -364,6 +396,8 @@ class MeasureWidget(QWidget):
         if not table.empty:
             saved_to = self._auto_save_csv(table)
             status += f" Saved to {saved_to}."
+            if disk_key is not None:
+                self._update_disk_cache(disk_key, saved_to)
         self.status_label.setText(status)
 
         _, labels_layer = self._selected_layers()
@@ -392,6 +426,58 @@ class MeasureWidget(QWidget):
         path = directory / self._default_csv_name()
         table.to_csv(path)
         return path
+
+    def _disk_cache_key(
+        self, image_layer, labels_layer, image_data, labels_data, level, stats, scale
+    ) -> str:
+        """Build a cross-session cache key from stable layer identity.
+
+        Unlike the in-memory :attr:`_cache` key (``id()``-based, dies with
+        the layer object), this survives closing and reopening napari: a
+        layer's ``source.path`` (the file it was read from) is stable
+        across sessions. Falls back to layer name + array shape/dtype for
+        in-memory-only layers with no source path.
+
+        ponytail: the fallback identifies by name, not content — a
+        different array reusing the same layer name would false-hit.
+        Fine for the common case (reload the same file); upgrade path
+        would hash a data sample if that ever bites someone.
+        """
+
+        def source_id(layer, data) -> str:
+            path = layer.source.path
+            return str(path) if path else f"name:{layer.name}:{data.shape}:{data.dtype}"
+
+        return json.dumps(
+            [
+                source_id(image_layer, image_data),
+                source_id(labels_layer, labels_data),
+                level,
+                list(stats),
+                list(scale),
+            ]
+        )
+
+    def _disk_cache_path(self) -> Path:
+        """Manifest file location: alongside where CSVs are auto-saved."""
+        return (self._save_dir or Path.cwd()) / ".regionprops_cache.json"
+
+    def _load_disk_cache(self) -> dict:
+        path = self._disk_cache_path()
+        if not path.exists():
+            return {}
+        try:
+            return json.loads(path.read_text())
+        except (json.JSONDecodeError, OSError):
+            return {}
+
+    def _update_disk_cache(self, key: str, csv_path: Path) -> None:
+        cache = self._load_disk_cache()
+        cache[key] = str(csv_path.resolve())
+        try:
+            self._disk_cache_path().write_text(json.dumps(cache))
+        except OSError:
+            pass
 
     def _populate_table(self, table):
         self.results_table.clear()

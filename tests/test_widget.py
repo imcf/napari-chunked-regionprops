@@ -104,8 +104,41 @@ def test_widget_measure_second_run_is_a_cache_hit(
 
     assert widget._table is not None
     assert widget._table.equals(first_table)
-    assert "(cached)" in widget.status_label.text()
+    assert "(session cache)" in widget.status_label.text()
     assert len(widget._cache) == 1  # unchanged, no new entry
+
+
+def test_widget_disk_cache_survives_new_widget_instance(
+    qtbot, make_napari_viewer, monkeypatch, tmp_path
+):
+    """A fresh widget (e.g. after closing/reopening the dock) reuses the
+    manifest-recorded CSV from a prior instance instead of recomputing."""
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+    first_table = widget._table
+    assert (tmp_path / ".regionprops_cache.json").exists()
+
+    fresh_widget = MeasureWidget(viewer)
+    fresh_widget._save_dir = tmp_path
+    assert fresh_widget._cache == {}  # no in-memory cache in a new instance
+
+    def _boom(*a, **k):
+        raise AssertionError("should not recompute on a disk-cache hit")
+
+    monkeypatch.setattr(
+        "napari_chunked_regionprops._widget.iter_measure_labels", _boom
+    )
+
+    fresh_widget._on_measure_clicked()  # same layers/stats/level -> disk hit
+
+    assert fresh_widget._table is not None
+    assert fresh_widget._table.equals(first_table)
+    assert "(disk cache)" in fresh_widget.status_label.text()
 
 
 def test_widget_default_csv_name_uses_labels_layer(make_napari_viewer):
