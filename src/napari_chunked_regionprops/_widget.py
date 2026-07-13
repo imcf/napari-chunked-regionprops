@@ -11,6 +11,7 @@ import numpy as np
 import pandas as pd
 from qtpy.QtCore import Qt
 from qtpy.QtWidgets import (
+    QAbstractItemView,
     QComboBox,
     QFileDialog,
     QGroupBox,
@@ -116,6 +117,11 @@ class MeasureWidget(QWidget):
         # the user manually picks a location once via "Save CSV…", which is
         # remembered for subsequent auto-saves too.
         self._save_dir: Path | None = None
+        # The Labels layer currently wearing a highlight colormap (see
+        # _apply_highlight) and its original colormap, so Clear can put it
+        # back exactly. None when no highlight is active.
+        self._highlighted_labels_layer = None
+        self._orig_colormap = None
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -205,8 +211,20 @@ class MeasureWidget(QWidget):
         layout.addWidget(self.status_label)
 
         self.results_table = QTableWidget()
+        self.results_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.results_table.setSelectionMode(QAbstractItemView.ExtendedSelection)
         self.results_table.cellClicked.connect(self._on_result_row_clicked)
+        self.results_table.itemSelectionChanged.connect(
+            self._on_result_selection_changed
+        )
         layout.addWidget(self.results_table)
+
+        self.clear_selection_btn = QPushButton("Clear selection")
+        self.clear_selection_btn.clicked.connect(
+            self._on_clear_selection_clicked
+        )
+        self.clear_selection_btn.setEnabled(False)
+        layout.addWidget(self.clear_selection_btn)
 
         self.save_btn = QPushButton("Save CSV…")
         self.save_btn.clicked.connect(self._on_save_clicked)
@@ -640,12 +658,14 @@ class MeasureWidget(QWidget):
                 )
 
     def _on_result_row_clicked(self, row: int, column: int) -> None:
-        """Clicking a results-table row highlights that object in the image
-        and centers/zooms the camera on it.
+        """Clicking a results-table row centers/zooms the camera on that
+        object (the row just clicked, even if it's part of a larger
+        multi-row selection — see :meth:`_on_result_selection_changed` for
+        the highlight itself).
 
         The zoom matters: with tens of thousands of objects in a volume,
-        just recoloring the selected label is invisible unless the camera
-        is already looking straight at it.
+        recoloring the selected label(s) alone is invisible unless the
+        camera is already looking straight at one of them.
         """
         item = self.results_table.item(row, 0)
         if item is None:
@@ -653,10 +673,66 @@ class MeasureWidget(QWidget):
         _, labels_layer = self._selected_layers()
         if labels_layer is None:
             return
-        label_id = int(item.text())
-        labels_layer.selected_label = label_id
-        labels_layer.show_selected_label = True
-        self._center_camera_on_label(labels_layer, label_id)
+        self._center_camera_on_label(labels_layer, int(item.text()))
+
+    def _on_result_selection_changed(self) -> None:
+        """Highlight every currently-selected row's object in the image,
+        dimming everything else — supports selecting several rows at once
+        (Ctrl/Shift-click, standard Qt multi-select). Restores normal
+        coloring the moment the selection becomes empty (see
+        :meth:`_on_clear_selection_clicked`).
+        """
+        _, labels_layer = self._selected_layers()
+        if labels_layer is None:
+            return
+        label_ids = {
+            int(item.text())
+            for item in self.results_table.selectedItems()
+            if item.column() == 0
+        }
+        self.clear_selection_btn.setEnabled(bool(label_ids))
+        if label_ids:
+            self._apply_highlight(labels_layer, label_ids)
+        elif self._highlighted_labels_layer is not None:
+            self._highlighted_labels_layer.colormap = self._orig_colormap
+            self._highlighted_labels_layer = None
+            self._orig_colormap = None
+
+    def _apply_highlight(self, labels_layer, label_ids: set) -> None:
+        """Recolor *labels_layer* so only *label_ids* show at full color;
+        every other object (and the background) fades out.
+
+        Remembers *labels_layer*'s original colormap the first time this
+        runs for it, so :meth:`_on_result_selection_changed` (on an empty
+        selection) or :meth:`_on_clear_selection_clicked` can restore it
+        exactly.
+
+        ponytail: only ever remembers one layer's original colormap at a
+        time — switching the Labels selection to a *different* layer
+        while one is already highlighted leaves that first layer stuck
+        dimmed. Not worth a dict of originals for what's normally a
+        single-Labels-layer workflow.
+        """
+        from napari.utils.colormaps import DirectLabelColormap
+
+        if labels_layer is not self._highlighted_labels_layer:
+            self._orig_colormap = labels_layer.colormap
+            self._highlighted_labels_layer = labels_layer
+
+        highlight = np.array([1.0, 1.0, 0.0, 1.0], dtype="float32")
+        dim = np.array([0.3, 0.3, 0.3, 0.15], dtype="float32")
+        color_dict = {label_id: highlight for label_id in label_ids}
+        color_dict[0] = np.array([0.0, 0.0, 0.0, 0.0], dtype="float32")
+        color_dict[None] = (
+            dim  # DirectLabelColormap's fallback for any id not listed
+        )
+        labels_layer.colormap = DirectLabelColormap(color_dict=color_dict)
+
+    def _on_clear_selection_clicked(self) -> None:
+        """Deselect every row — triggers :meth:`_on_result_selection_changed`,
+        which restores the Labels layer's original coloring since the
+        selection becomes empty."""
+        self.results_table.clearSelection()
 
     def _center_camera_on_label(self, labels_layer, label_id: int) -> None:
         """Center and zoom the camera on *label_id*'s object, jumping to
@@ -706,7 +782,9 @@ class MeasureWidget(QWidget):
         self._viewer.camera.zoom = canvas_px / (linear_size * padding)
 
     def _on_image_clicked(self, layer, event) -> None:
-        """Clicking a labelled object in the image selects its table row.
+        """Clicking a labelled object in the image selects its table row
+        (replacing any existing selection) — the row-selection handler
+        (:meth:`_on_result_selection_changed`) then applies the highlight.
 
         Registered as a ``mouse_drag_callbacks`` entry on the Labels layer
         (see :meth:`_on_measured`) — napari calls it with the layer and the
@@ -721,8 +799,6 @@ class MeasureWidget(QWidget):
         )
         if not value:
             return
-        layer.selected_label = int(value)
-        layer.show_selected_label = True
         target = str(int(value))
         for row in range(self.results_table.rowCount()):
             item = self.results_table.item(row, 0)

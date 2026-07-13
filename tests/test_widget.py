@@ -272,9 +272,6 @@ def test_widget_row_click_selects_label_in_image(
 
     widget._on_result_row_clicked(1, 0)  # second row -> label 2
 
-    labels_layer = viewer.layers["labels"]
-    assert labels_layer.selected_label == 2
-    assert labels_layer.show_selected_label is True
     # camera actually moved/zoomed onto the object, not left untouched --
     # with tens of thousands of objects, just recoloring one is invisible.
     assert tuple(viewer.camera.center) != default_center
@@ -302,6 +299,38 @@ def test_widget_row_click_jumps_z_slice_for_3d_labels(
     widget._on_result_row_clicked(0, 0)  # only row -> label 1
 
     assert viewer.dims.current_step[0] == 1
+
+
+def test_widget_multi_select_highlights_and_clear_restores(
+    qtbot, make_napari_viewer, tmp_path
+):
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+
+    labels_layer = viewer.layers["labels"]
+    original_colormap = labels_layer.colormap
+    assert not widget.clear_selection_btn.isEnabled()
+
+    widget.results_table.item(0, 0).setSelected(True)
+    widget.results_table.item(1, 0).setSelected(True)
+
+    assert widget.clear_selection_btn.isEnabled()
+    assert labels_layer.colormap is not original_colormap
+    color_dict = labels_layer.colormap.color_dict
+    assert color_dict[1][0] == 1.0  # label 1 highlighted (yellow -> R=1)
+    assert color_dict[2][0] == 1.0  # label 2 highlighted too
+    assert color_dict[None][0] == 0.3  # everything else dimmed
+
+    widget._on_clear_selection_clicked()
+
+    assert not widget.results_table.selectedItems()
+    assert not widget.clear_selection_btn.isEnabled()
+    assert labels_layer.colormap is original_colormap
 
 
 class _FakeClickEvent:
@@ -333,11 +362,14 @@ def test_widget_image_click_selects_table_row(
 
     widget._on_image_clicked(labels_layer, _FakeClickEvent())
 
-    assert labels_layer.selected_label == 2
     assert (
         widget.results_table.item(widget.results_table.currentRow(), 0).text()
         == "2"
     )
+    # selecting the row (see _on_result_selection_changed) applied the
+    # highlight too, same mechanism as a direct table click.
+    assert widget.clear_selection_btn.isEnabled()
+    assert labels_layer.colormap.color_dict[2][0] == 1.0
 
 
 def test_widget_reload_csv_from_path(
