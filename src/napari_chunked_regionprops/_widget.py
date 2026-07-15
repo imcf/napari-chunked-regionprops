@@ -790,7 +790,7 @@ class MeasureWidget(QWidget):
         padding = 6  # object spans roughly 1/padding of the shorter canvas edge
         self._viewer.camera.zoom = canvas_px / (linear_size * padding)
 
-    def _on_image_clicked(self, viewer, event) -> None:
+    def _on_image_clicked(self, viewer, event):
         """Clicking a labelled object in the image selects its table row
         (replacing any existing selection) — the row-selection handler
         (:meth:`_on_result_selection_changed`) then applies the highlight.
@@ -801,9 +801,26 @@ class MeasureWidget(QWidget):
         entirely whenever some other layer was selected in the layers list.
         Looks up the current Labels selection itself instead of trusting
         napari's active-layer state.
+
+        A generator (napari's standard click-vs-drag idiom): napari calls
+        it once on mouse press, then resumes it on every subsequent
+        ``mouse_move``/``mouse_release`` as long as it keeps yielding. A
+        canvas pan/zoom *starts* with the same mouse press this callback
+        sees, so treating press alone as "clicked an object" turned every
+        pan that started on top of a label into a single-object selection —
+        dimming every other label and making them appear to vanish as soon
+        as the user moved the view. Waiting for release-without-movement
+        distinguishes a real click from a drag.
         """
         _, labels_layer = self._selected_layers()
         if labels_layer is None:
+            return
+        dragged = False
+        yield
+        while event.type == "mouse_move":
+            dragged = True
+            yield
+        if dragged:
             return
         value = labels_layer.get_value(
             event.position,

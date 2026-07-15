@@ -1,5 +1,6 @@
 import dask.array as da
 import numpy as np
+import pytest
 from qtpy.QtCore import Qt
 
 from napari_chunked_regionprops._widget import (
@@ -350,12 +351,22 @@ class _FakeClickEvent:
 
     Only the attributes ``_on_image_clicked`` reads; the values are
     irrelevant here since ``get_value`` itself is monkeypatched in the
-    test that uses this.
+    test that uses this. ``type`` defaults to a plain release (no drag) --
+    tests exercising the drag-vs-click distinction override it.
     """
 
     position = (0, 0)
     view_direction = None
     dims_displayed = (0, 1)
+    type = "mouse_release"
+
+
+def _run_image_click(widget, event) -> None:
+    """Drive ``_on_image_clicked``'s generator the way napari does: one
+    ``next()`` on press (primes it to its first ``yield``), then one more
+    per subsequent event until it's exhausted."""
+    for _ in widget._on_image_clicked(None, event):
+        pass
 
 
 def test_widget_image_click_selects_table_row(
@@ -376,7 +387,7 @@ def test_widget_image_click_selects_table_row(
     # _on_image_clicked resolves the Labels layer from our own combo, not
     # from napari's active-layer state (see docstring: that state is what
     # made clicking the image silently do nothing before this fix).
-    widget._on_image_clicked(None, _FakeClickEvent())
+    _run_image_click(widget, _FakeClickEvent())
 
     assert (
         widget.results_table.item(widget.results_table.currentRow(), 0).text()
@@ -386,6 +397,37 @@ def test_widget_image_click_selects_table_row(
     # highlight too, same mechanism as a direct table click.
     assert widget.clear_selection_btn.isEnabled()
     assert labels_layer.colormap.color_dict[2][0] == 1.0
+
+
+def test_widget_image_drag_does_not_select_row(
+    qtbot, make_napari_viewer, monkeypatch, tmp_path
+):
+    """A click-drag that starts on a labelled object (e.g. panning the
+    canvas) must NOT select/highlight that object -- otherwise every pan
+    starting over an object re-triggers the single-object highlight,
+    dimming every other label and making them appear to vanish."""
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+
+    labels_layer = viewer.layers["labels"]
+    monkeypatch.setattr(labels_layer, "get_value", lambda *a, **k: 2)
+
+    event = _FakeClickEvent()
+    gen = widget._on_image_clicked(None, event)
+    next(gen)  # mouse press -- primes the generator to its first yield
+    event.type = "mouse_move"
+    next(gen)  # one drag step -- sets `dragged = True` inside the generator
+    event.type = "mouse_release"
+    with pytest.raises(StopIteration):
+        next(gen)  # release -- loop exits, `dragged` short-circuits the click
+
+    assert widget.results_table.currentRow() == -1
+    assert not widget.clear_selection_btn.isEnabled()
 
 
 def test_widget_image_click_handles_multiscale_tuple_return(
@@ -413,7 +455,7 @@ def test_widget_image_click_handles_multiscale_tuple_return(
     labels_layer = viewer.layers["labels"]
     monkeypatch.setattr(labels_layer, "get_value", lambda *a, **k: (2, 0))
 
-    widget._on_image_clicked(None, _FakeClickEvent())
+    _run_image_click(widget, _FakeClickEvent())
 
     assert (
         widget.results_table.item(widget.results_table.currentRow(), 0).text()
