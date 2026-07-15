@@ -41,6 +41,20 @@ if TYPE_CHECKING:
 _GEOMETRIC_STATS = frozenset({"area_voxels", "centroid"})
 
 
+class _NumericTableWidgetItem(QTableWidgetItem):
+    """A results-table cell that sorts by numeric value, not cell text.
+
+    Plain ``QTableWidgetItem`` sorts lexicographically ("10" < "2"), which
+    is wrong for label ids and measurement columns.
+    """
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        try:
+            return float(self.text()) < float(other.text())
+        except ValueError:
+            return super().__lt__(other)
+
+
 def _level_data(layer, level: int):
     """Return one dask array from a (possibly multiscale) layer's data."""
     data = layer.data
@@ -646,17 +660,24 @@ class MeasureWidget(QWidget):
             pass
 
     def _populate_table(self, table):
+        # Sorting must be off while populating: with it on, Qt re-sorts
+        # after every setItem call, so a row can move out from under us
+        # mid-population and later columns land in the wrong row.
+        self.results_table.setSortingEnabled(False)
         self.results_table.clear()
         self.results_table.setRowCount(len(table))
         columns = ["label", *table.columns]
         self.results_table.setColumnCount(len(columns))
         self.results_table.setHorizontalHeaderLabels(columns)
         for row, (label_id, values) in enumerate(table.iterrows()):
-            self.results_table.setItem(row, 0, QTableWidgetItem(str(label_id)))
+            self.results_table.setItem(
+                row, 0, _NumericTableWidgetItem(str(label_id))
+            )
             for col, value in enumerate(values, start=1):
                 self.results_table.setItem(
-                    row, col, QTableWidgetItem(f"{value:.4g}")
+                    row, col, _NumericTableWidgetItem(f"{value:.4g}")
                 )
+        self.results_table.setSortingEnabled(True)
 
     def _on_result_row_clicked(self, row: int, column: int) -> None:
         """Clicking a results-table row centers/zooms the camera on that
