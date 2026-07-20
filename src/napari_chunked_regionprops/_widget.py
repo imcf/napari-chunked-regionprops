@@ -61,6 +61,29 @@ def _level_data(layer, level: int):
     return data[level] if layer.multiscale else data
 
 
+def _channel_slices(name: str, data, labels_shape: tuple[int, ...]):
+    """Split one checked Image layer into ``(display_name, array)`` channels.
+
+    Ordinarily an Image layer's data already matches the Labels layer shape
+    exactly -- this plugin's "check every channel" list expects one napari
+    layer per channel. Some readers instead load every channel into a
+    single layer with a leading channel axis (shape ``(C, *labels_shape)``),
+    which used to surface as an opaque "shape mismatch" error from
+    :func:`iter_measure_labels`. Slice that axis into *C* per-channel
+    arrays here instead, so it measures the same as *C* separate layers.
+    """
+    if data.shape == labels_shape:
+        return [(name, data)]
+    if data.ndim == len(labels_shape) + 1 and data.shape[1:] == labels_shape:
+        return [(f"{name}_C{i}", data[i]) for i in range(data.shape[0])]
+    raise ValueError(
+        f"image layer {name!r} has shape {data.shape}, incompatible with "
+        f"labels shape {labels_shape} (expected an exact match, or a "
+        f"leading channel axis of shape ({data.shape[0] if data.ndim else '?'}, "
+        f"{', '.join(map(str, labels_shape))}))"
+    )
+
+
 def _sequential_ids_hint(labels_layer, level: int) -> "np.ndarray | None":
     """Build the exact id array from a Labels layer's known-object-count hint.
 
@@ -332,7 +355,11 @@ class MeasureWidget(QWidget):
         With multiple Image layers checked, intensity stats (everything
         except ``area_voxels``/``centroid``) are measured once per channel and
         suffixed with the channel's layer name (e.g.
-        ``mean_intensity_DAPI``) — see the ``_run`` worker below.
+        ``mean_intensity_DAPI``) — see the ``_run`` worker below. A checked
+        layer whose data already bundles every channel into one array
+        (shape ``(C, *labels_shape)``, e.g. a reader that doesn't split
+        channels into separate layers) is expanded into *C* channels the
+        same way — see :func:`_channel_slices`.
         """
         from napari.qt.threading import thread_worker
 
@@ -354,9 +381,17 @@ class MeasureWidget(QWidget):
         level = self.level_spin.value()
         labels_data = _level_data(labels_layer, level)
         scale = tuple(labels_layer.scale[-labels_data.ndim :])
-        channels = [
-            (layer.name, _level_data(layer, level)) for layer in image_layers
-        ]
+        try:
+            channels = [
+                channel
+                for layer in image_layers
+                for channel in _channel_slices(
+                    layer.name, _level_data(layer, level), labels_data.shape
+                )
+            ]
+        except ValueError as exc:
+            QMessageBox.critical(self, "Shape mismatch", str(exc))
+            return
 
         cache_key = (
             tuple(id(data) for _, data in channels),

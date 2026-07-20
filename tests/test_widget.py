@@ -552,3 +552,70 @@ def test_widget_single_checked_channel_keeps_unsuffixed_columns(
 
     assert "mean_intensity" in widget._table.columns
     assert "mean_intensity_image" not in widget._table.columns
+
+
+def test_widget_measure_splits_channel_axis_bundled_in_one_layer(
+    qtbot, make_napari_viewer, tmp_path
+):
+    """A reader that loads every channel into one Image layer (shape
+    (C, *labels_shape)) used to fail with a raw "shape mismatch" error --
+    it should instead be measured the same as C separate checked layers."""
+    viewer = make_napari_viewer()
+    lab = np.array(
+        [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 2, 2], [0, 0, 2, 2]],
+        dtype="int32",
+    )
+    img = np.stack(
+        [
+            np.full((4, 4), 10, dtype="float32"),
+            np.full((4, 4), 20, dtype="float32"),
+        ]
+    )
+    viewer.add_image(img, name="stack")
+    viewer.add_labels(lab, name="labels")
+
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+
+    table = widget._table
+    assert "mean_intensity_stack_C0" in table.columns
+    assert "mean_intensity_stack_C1" in table.columns
+    assert table.loc[1, "mean_intensity_stack_C0"] == 10
+    assert table.loc[1, "mean_intensity_stack_C1"] == 20
+    # geometric stats present exactly once, not per channel
+    assert "area_voxels" in table.columns
+    assert "area_voxels_stack_C0" not in table.columns
+
+
+def test_widget_measure_incompatible_shape_shows_error(
+    qtbot, make_napari_viewer, monkeypatch, tmp_path
+):
+    """An Image layer that's neither an exact shape match nor a leading
+    channel axis over the Labels shape must show a clear dialog, not a
+    raw traceback or a hang waiting on a thread worker that never starts."""
+    viewer = make_napari_viewer()
+    lab = np.array(
+        [[1, 1, 0, 0], [1, 1, 0, 0], [0, 0, 2, 2], [0, 0, 2, 2]],
+        dtype="int32",
+    )
+    viewer.add_image(np.zeros((3, 5, 5), dtype="float32"), name="bogus")
+    viewer.add_labels(lab, name="labels")
+
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+
+    errors = []
+    monkeypatch.setattr(
+        "napari_chunked_regionprops._widget.QMessageBox.critical",
+        staticmethod(lambda *a: errors.append(a[-1])),
+    )
+
+    widget._on_measure_clicked()
+
+    assert len(errors) == 1
+    assert "bogus" in errors[0]
+    assert widget._table is None
+    assert widget._worker is None
