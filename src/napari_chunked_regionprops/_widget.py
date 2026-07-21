@@ -282,9 +282,7 @@ class MeasureWidget(QWidget):
         self.colormap_name_combo.setCurrentText("viridis")
         colormap_layout.addWidget(self.colormap_name_combo)
         self.apply_colormap_btn = QPushButton("Apply")
-        self.apply_colormap_btn.clicked.connect(
-            self._on_apply_colormap_clicked
-        )
+        self.apply_colormap_btn.clicked.connect(self._on_apply_colormap_clicked)
         colormap_layout.addWidget(self.apply_colormap_btn)
         self.reset_colors_btn = QPushButton("Reset colors")
         self.reset_colors_btn.clicked.connect(self._on_reset_colors_clicked)
