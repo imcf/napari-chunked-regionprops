@@ -1183,9 +1183,9 @@ class MeasureWidget(QWidget):
         Needs the ``centroid`` and ``area_voxels`` stats to have been measured
         (or reloaded) for this label — silently does nothing otherwise.
 
-        ponytail: "linear size" is a rough ``area_voxels ** (1/ndim)`` estimate
-        (voxel count -> a cube-root/sqrt length), not the object's real
-        bounding box, so very elongated objects won't be framed tightly.
+        The object's size is its bounding box when the table has one (a
+        patchworks table does), framing a long thin object along its
+        length; otherwise a rough ``area_voxels ** (1/ndim)`` estimate.
         Canvas size comes from the private ``_qt_viewer.canvas`` (no
         public napari accessor for it) — upgrade path if that ever breaks
         across a napari version bump. Z-slice jump only handles plain
@@ -1214,9 +1214,21 @@ class MeasureWidget(QWidget):
                 current_step[-3] = int(round(row["centroid_z"]))
                 self._viewer.dims.current_step = current_step
 
-        linear_size = row["area_voxels"] ** (1 / ndim) * np.mean(
-            labels_layer.scale[-ndim:]
-        )
+        axes = "zyx"[-ndim:]
+        box = [f"bbox_{m}_{ax}" for m in ("min", "max") for ax in axes]
+        if all(c in row.index for c in box):
+            # The real extent (patchworks tables carry bounding boxes): a
+            # long thin object is framed along its length, not as a cube.
+            extent = [
+                (row[f"bbox_max_{ax}"] - row[f"bbox_min_{ax}"] + 1) * sc
+                for ax, sc in zip(axes, labels_layer.scale[-ndim:])
+            ]
+            # the object spans ~2/3 of the shorter canvas edge
+            linear_size = max(extent[-2:]) * 1.5 / 6
+        else:
+            linear_size = row["area_voxels"] ** (1 / ndim) * np.mean(
+                labels_layer.scale[-ndim:]
+            )
         if linear_size <= 0:
             return
         canvas_px = min(self._viewer.window._qt_viewer.canvas.size)

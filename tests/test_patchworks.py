@@ -207,6 +207,17 @@ def test_selecting_highlights_parents_and_children(make_napari_viewer, store):
     }
 
 
+def test_camera_frames_a_thin_object_by_its_length(make_napari_viewer, store):
+    s, arrays = store
+    viewer = make_napari_viewer()
+    layer = _add(viewer, s, "cilia", arrays)
+    widget = MeasureWidget(viewer)
+    widget._center_camera_on_label(layer, 5)
+    canvas = min(viewer.window._qt_viewer.canvas.size)
+    # 16 voxels long: framed on its length, not on 16 ** 0.5 = 4 voxels
+    assert viewer.camera.zoom == pytest.approx(canvas / (16 * 1.5))
+
+
 def test_corrected_view_with_patchworks(store):
     """With patchworks installed, the table shown is the reviewed one."""
     patchworks = pytest.importorskip("patchworks")
