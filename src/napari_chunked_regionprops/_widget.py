@@ -126,6 +126,23 @@ def _sequential_ids_hint(labels_layer, level: int) -> "np.ndarray | None":
     return np.arange(1, int(meta["n_objects"]) + 1, dtype="int64")
 
 
+def _read_table_file(path) -> "pd.DataFrame":
+    """A saved measurement table: ``.parquet`` or ``.csv``, by extension."""
+    if str(path).lower().endswith(".parquet"):
+        table = pd.read_parquet(path)
+        if "label" in table.columns:
+            table = table.set_index("label")
+        return table
+    return pd.read_csv(path, index_col="label")
+
+
+def _write_table_file(table: "pd.DataFrame", path) -> None:
+    if str(path).lower().endswith(".parquet"):
+        table.to_parquet(path)
+    else:
+        table.to_csv(path)
+
+
 class MeasureWidget(QWidget):
     """Measure a Labels layer against an Image layer via a chunk-local map/merge.
 
@@ -474,7 +491,7 @@ class MeasureWidget(QWidget):
         disk_entry = self._load_disk_cache().get(disk_key)
         if disk_entry is not None and Path(disk_entry).exists():
             try:
-                table = pd.read_csv(disk_entry, index_col="label")
+                table = _read_table_file(disk_entry)
             except (OSError, ValueError):
                 table = None
             if table is not None:
@@ -1106,15 +1123,18 @@ class MeasureWidget(QWidget):
         if self._table is None or self._table.empty:
             return
         path, _ = QFileDialog.getSaveFileName(
-            self, "Save measurements", self._default_csv_name(), "CSV (*.csv)"
+            self,
+            "Save measurements",
+            self._default_csv_name(),
+            "CSV (*.csv);;Parquet (*.parquet)",
         )
         if path:
-            self._table.to_csv(path)
+            _write_table_file(self._table, path)
             self._save_dir = Path(path).parent
 
     def _on_reload_browse_clicked(self) -> None:
         path, _ = QFileDialog.getOpenFileName(
-            self, "Load measurements", "", "CSV (*.csv)"
+            self, "Load measurements", "", "Tables (*.csv *.parquet)"
         )
         if path:
             self.reload_path_edit.setText(path)
@@ -1132,7 +1152,7 @@ class MeasureWidget(QWidget):
         if not path:
             return
         try:
-            table = pd.read_csv(path, index_col="label")
+            table = _read_table_file(path)
         except (OSError, ValueError) as exc:
             QMessageBox.critical(self, "Load failed", str(exc))
             return

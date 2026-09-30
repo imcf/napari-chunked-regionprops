@@ -729,3 +729,28 @@ def test_widget_shows_text_columns(make_napari_viewer, tmp_path):
     widget._on_reload_clicked()
     assert widget.results_table.item(1, 2).text() == "fixed"
     assert widget.results_table.item(0, 1).text() == "4"
+
+
+def test_widget_parquet_save_and_reload(qtbot, make_napari_viewer, tmp_path):
+    pytest.importorskip("pyarrow")
+    from napari_chunked_regionprops._widget import (
+        _read_table_file,
+        _write_table_file,
+    )
+
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+    path = tmp_path / "labels.parquet"
+    _write_table_file(widget._table, path)
+    back = _read_table_file(path)
+    assert back.index.name == "label" and list(back.index) == [1, 2]
+    assert back.loc[1, "area_voxels"] == widget._table.loc[1, "area_voxels"]
+
+    widget.reload_path_edit.setText(str(path))
+    widget._table = None
+    widget._on_reload_clicked()
+    assert list(widget._table.index) == [1, 2]
