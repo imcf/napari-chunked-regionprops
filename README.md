@@ -90,6 +90,37 @@ chunks held in memory at once — turn it down (even to 1) if a measurement is
 still using too much RAM; turn it up if you have RAM to spare and want it
 faster.
 
+## patchworks object tables
+
+[patchworks](https://github.com/imcf/patchworks) measures every object once,
+on the cluster, and stores the table next to the labels
+(`image.zarr/labels/<name>/table`). This plugin uses it:
+
+- **Loaded instead of measured.** Pick a Labels layer that has a table and
+  it shows straight away: sizes, centroids, bounding boxes and which object
+  of another label image each one belongs to (`cyto_labels_id`), with no
+  voxel read. With patchworks installed, it is the *reviewed* table:
+  objects rejected in `patchworks review` are gone, joined ones combined,
+  and cilia carry their length and position in the cell (apical, basal,
+  lateral, central). **Load patchworks object table** reloads it;
+  **Measure** adds intensities, keeping the table's columns.
+- **Parents and children together.** Selecting a cell also lights up its
+  nuclei and cilia in their own layers (magenta); selecting a cilium lights
+  up its cell (cyan).
+- **No scan for ids.** The table lists every object, so measuring skips
+  the whole-volume "scanning for objects" pass even when the ids are not
+  sequential.
+- **Framing by the real extent.** Clicking a row zooms to the object's
+  bounding box, so a long thin cilium is framed along its length.
+
+The table is found from the layer metadata patchworks' viewer sets, or from
+the store path when an OME-Zarr reader opened it. A table computed from
+other labels than the ones stored (after a re-segmentation) is refused,
+never shown against the wrong objects.
+
+Tables can also be saved and reloaded as **Parquet** (`.parquet`, needs
+`pyarrow`): typed, compressed and much faster than CSV for large tables.
+
 ## Measurements
 
 | Stat | Needs intensity image | Notes |

@@ -33,7 +33,9 @@ dependencies = [
 # napari-chunked-regionprops itself doesn't pin a Qt binding at runtime (avoids
 # conflicting with whatever the host napari install already brought in), but
 # the test suite drives real Qt widgets and needs one.
-dev = ["pytest", "pytest-qt", "PyQt5"]
+# zarr + pyarrow: the patchworks-table and Parquet tests (both optional at
+# runtime: zarr comes with any OME-Zarr reader, pyarrow only for .parquet).
+dev = ["pytest", "pytest-qt", "PyQt5", "zarr>=2.16", "pyarrow"]
 
 [project.entry-points."napari.manifest"]
 napari-chunked-regionprops = "napari_chunked_regionprops:napari.yaml"
