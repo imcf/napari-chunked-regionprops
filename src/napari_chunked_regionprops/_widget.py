@@ -30,6 +30,7 @@ from qtpy.QtWidgets import (
     QWidget,
 )
 
+from . import _patchworks
 from ._measure import DEFAULT_STATS, available_stats, iter_measure_labels
 
 if TYPE_CHECKING:
@@ -126,6 +127,21 @@ def _sequential_ids_hint(labels_layer, level: int) -> "np.ndarray | None":
     return np.arange(1, int(meta["n_objects"]) + 1, dtype="int64")
 
 
+def _ids_hint(labels_layer, level: int) -> "np.ndarray | None":
+    """The exact id set of a Labels layer, when known without a scan.
+
+    From the sequential-labels hint (:func:`_sequential_ids_hint`), or from
+    a patchworks object table next to the labels, which lists every object
+    (non-sequential ids included). Level 0 only, for the same reason as the
+    sequential hint: a coarser level may have lost small objects.
+    """
+    ids = _sequential_ids_hint(labels_layer, level)
+    if ids is not None or level != 0:
+        return ids
+    group = _patchworks.label_group(labels_layer)
+    return _patchworks.raw_ids(group) if group else None
+
+
 def _read_table_file(path) -> "pd.DataFrame":
     """A saved measurement table: ``.parquet`` or ``.csv``, by extension."""
     if str(path).lower().endswith(".parquet"):
@@ -189,6 +205,9 @@ class MeasureWidget(QWidget):
         # that, so "Reset colors" can restore it exactly.
         self._measurement_colored_layer = None
         self._pre_measurement_colormap = None
+        # Which Labels layer the shown table describes, and where it came
+        # from ("patchworks" for a table read next to the labels).
+        self._table_layer_name: str | None = None
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -237,6 +256,20 @@ class MeasureWidget(QWidget):
         self.reload_btn.clicked.connect(self._on_reload_clicked)
         reload_layout.addWidget(self.reload_btn)
         layout.addWidget(reload_box)
+
+        pw_row = QHBoxLayout()
+        self.patchworks_btn = QPushButton("Load patchworks object table")
+        self.patchworks_btn.setToolTip(
+            "Show the table patchworks stored next to these labels (sizes, "
+            "centroids, which cell each object is in, review corrections) "
+            "-- no measuring needed. Loaded automatically when a Labels "
+            "layer has one."
+        )
+        self.patchworks_btn.clicked.connect(
+            lambda: self._load_patchworks_table(quiet=False)
+        )
+        pw_row.addWidget(self.patchworks_btn)
+        layout.addLayout(pw_row)
 
         stats_box = QGroupBox("Measurements")
         stats_layout = QVBoxLayout()
@@ -343,6 +376,9 @@ class MeasureWidget(QWidget):
         self._viewer.layers.events.inserted.connect(self._refresh_layer_choices)
         self._viewer.layers.events.removed.connect(self._refresh_layer_choices)
         self.labels_combo.currentIndexChanged.connect(self._update_level_range)
+        self.labels_combo.currentIndexChanged.connect(
+            lambda _=None: self._load_patchworks_table(quiet=True)
+        )
         # On the viewer, not the Labels layer: a layer's own mouse_drag_
         # callbacks only fire while it's napari's *active* layer (see
         # napari/_vispy/canvas.py), so clicking the image would silently do
@@ -416,6 +452,59 @@ class MeasureWidget(QWidget):
             if item.checkState() == Qt.Checked:
                 stats.append(item.text())
         return tuple(stats)
+
+    def _load_patchworks_table(self, quiet: bool = True) -> bool:
+        """Show the patchworks object table of the selected Labels layer.
+
+        Automatic (*quiet*) when a Labels layer is picked: only when it has
+        a table and nothing else is shown for it yet. From the button, it
+        says why nothing was loaded.
+        """
+        _, labels_layer = self._selected_layers()
+        if labels_layer is None:
+            return False
+        if quiet and self._table_layer_name == labels_layer.name:
+            return False
+        group = _patchworks.label_group(labels_layer)
+        if group is None:
+            if not quiet:
+                self.status_label.setText(
+                    "No patchworks object table next to these labels."
+                )
+            return False
+        try:
+            table = _patchworks.read_table(group)
+        except ValueError as exc:
+            if not quiet:
+                self.status_label.setText(str(exc))
+            return False
+        self._show_table(table, labels_layer)
+        self.status_label.setText(
+            f"{len(table)} objects from {group}/table -- no measuring needed. "
+            "Measure to add intensities."
+        )
+        return True
+
+    def _patchworks_extra(self, labels_layer, level: int):
+        """The patchworks table's columns to join onto a fresh measurement
+        (parents, bounding boxes, position...), when measuring level 0."""
+        if level != 0:
+            return None
+        group = _patchworks.label_group(labels_layer)
+        if group is None:
+            return None
+        try:
+            return _patchworks.read_table(group)
+        except ValueError:
+            return None
+
+    def _show_table(self, table, labels_layer) -> None:
+        self._table = table
+        self._table_layer_name = labels_layer.name
+        self._populate_table(table)
+        self._refresh_colormap_columns(table)
+        self.save_btn.setEnabled(not table.empty)
+        self._wire_labels_features(labels_layer, table)
 
     def _on_measure_clicked(self):
         """Validate the current selection, then run (or reuse a cached) measurement.
@@ -501,7 +590,8 @@ class MeasureWidget(QWidget):
                 )
                 return
 
-        ids_hint = _sequential_ids_hint(labels_layer, level)
+        ids_hint = _ids_hint(labels_layer, level)
+        pw_extra = self._patchworks_extra(labels_layer, level)
 
         self.measure_btn.setEnabled(False)
         self.progress_bar.setVisible(True)
@@ -576,6 +666,11 @@ class MeasureWidget(QWidget):
             result = tables[0]
             for extra in tables[1:]:
                 result = result.join(extra)
+            if pw_extra is not None:
+                # What only patchworks knows (parents, boxes, position...)
+                result = result.join(
+                    pw_extra.drop(columns=list(result.columns), errors="ignore")
+                )
             return result
 
         # Keep a reference on self — an unreferenced worker can be garbage
@@ -664,6 +759,7 @@ class MeasureWidget(QWidget):
         self.status_label.setText(status)
 
         _, labels_layer = self._selected_layers()
+        self._table_layer_name = labels_layer.name if labels_layer else None
         self._wire_labels_features(labels_layer, table)
 
     def _wire_labels_features(
@@ -1164,6 +1260,7 @@ class MeasureWidget(QWidget):
         self.status_label.setText(f"{len(table)} objects loaded from {path}.")
 
         _, labels_layer = self._selected_layers()
+        self._table_layer_name = labels_layer.name if labels_layer else None
         self._wire_labels_features(labels_layer, table)
 
 
