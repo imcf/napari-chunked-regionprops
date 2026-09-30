@@ -231,3 +231,40 @@ def test_corrected_view_with_patchworks(store):
     assert list(table.index) == [2]
     raw = _patchworks.read_table(f"{s}/labels/nuclei", corrected=False)
     assert list(raw.index) == [1, 2]
+
+
+def test_label_zarr_without_a_table_is_measured_as_before(
+    qtbot, make_napari_viewer, tmp_path
+):
+    """A label zarr with no object table -- tagged by patchworks' viewer
+    or not -- is simply measured from its voxels, ids scanned."""
+    lab = np.zeros((6, 8), "int32")
+    lab[1:3, 1:3] = 4
+    lab[4:6, 5:8] = 9
+    root = zarr.open_group(str(tmp_path / "s.zarr"), mode="w")
+    group = root.require_group("labels/cells")
+    group.attrs["multiscales"] = [{"datasets": [{"path": "0"}]}]
+    arr = group.create_array("0", shape=lab.shape, dtype=lab.dtype)
+    arr[...] = lab
+
+    viewer = make_napari_viewer()
+    viewer.add_image(np.ones((6, 8), "float32"), name="image")
+    import dask.array as da
+
+    level1 = group.create_array("1", shape=(3, 4), dtype=lab.dtype)
+    level1[...] = lab[::2, ::2]
+    layer = viewer.add_labels(
+        [da.from_zarr(arr), da.from_zarr(level1)],
+        name="cells",
+        multiscale=True,
+        metadata={"patchworks_labels": f"{tmp_path}/s.zarr/labels/cells"},
+    )
+    assert _patchworks.label_group(layer) is None
+    widget = MeasureWidget(viewer)
+    widget._save_dir = tmp_path
+    assert widget._table is None  # nothing to load: no table
+    widget._on_measure_clicked()
+    qtbot.waitUntil(lambda: widget._table is not None, timeout=5000)
+    assert list(widget._table.index) == [4, 9]
+    assert widget._table.loc[9, "area_voxels"] == 6
+    assert "objects measured" in widget.status_label.text()
