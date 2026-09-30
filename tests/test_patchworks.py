@@ -175,6 +175,38 @@ def test_measuring_uses_the_table_ids_and_keeps_its_columns(
     assert widget._table.loc[2, "cells_id"] == 7  # joined from the table
 
 
+def test_selecting_highlights_parents_and_children(make_napari_viewer, store):
+    s, arrays = store
+    viewer = make_napari_viewer()
+    viewer.add_image(np.zeros((12, 40), "float32"), name="image")
+    for name in ("cells", "nuclei", "cilia"):
+        _add(viewer, s, name, arrays)
+    widget = MeasureWidget(viewer)
+
+    # A cell: its nucleus and cilium light up in their own layers
+    widget.labels_combo.setCurrentText("cells")
+    related = widget.related_objects(viewer.layers["cells"], {7})
+    assert related == {"nuclei": ("child", {2}), "cilia": ("child", {5})}
+    row = list(widget._table.index).index(7)
+    widget.results_table.item(row, 0).setSelected(True)
+    nuclei = viewer.layers["nuclei"]
+    rendered = nuclei.colormap.map(np.array([1, 2]))
+    assert tuple(rendered[1]) == (1.0, 0.0, 1.0, 1.0)  # its nucleus
+    assert rendered[0][3] < 0.5  # the other one, dimmed
+
+    widget._on_clear_selection_clicked()
+    assert "nuclei" not in widget._related_originals
+    assert type(nuclei.colormap).__name__ != "DirectLabelColormap" or (
+        nuclei.colormap.map(np.array([1]))[0][3] > 0.5
+    )
+
+    # A cilium: its cell lights up
+    widget.labels_combo.setCurrentText("cilia")
+    assert widget.related_objects(viewer.layers["cilia"], {5}) == {
+        "cells": ("parent", {7})
+    }
+
+
 def test_corrected_view_with_patchworks(store):
     """With patchworks installed, the table shown is the reviewed one."""
     patchworks = pytest.importorskip("patchworks")

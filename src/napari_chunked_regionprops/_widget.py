@@ -208,6 +208,11 @@ class MeasureWidget(QWidget):
         # Which Labels layer the shown table describes, and where it came
         # from ("patchworks" for a table read next to the labels).
         self._table_layer_name: str | None = None
+        # Other Labels layers highlighted as parents/children of the
+        # selection: layer name -> colormap to restore.
+        self._related_originals: dict = {}
+        # patchworks tables of other layers, for finding children.
+        self._related_tables: dict = {}
 
         layout = QVBoxLayout()
         self.setLayout(layout)
@@ -501,6 +506,7 @@ class MeasureWidget(QWidget):
     def _show_table(self, table, labels_layer) -> None:
         self._table = table
         self._table_layer_name = labels_layer.name
+        self._related_tables = {}
         self._populate_table(table)
         self._refresh_colormap_columns(table)
         self.save_btn.setEnabled(not table.empty)
@@ -745,6 +751,7 @@ class MeasureWidget(QWidget):
         if cache_note is None:
             self._cache[cache_key] = table
         self._table = table
+        self._related_tables = {}
         suffix = f" ({cache_note})" if cache_note else ""
         status = f"{len(table)} objects measured.{suffix}"
         self._populate_table(table)
@@ -1036,10 +1043,13 @@ class MeasureWidget(QWidget):
         self.clear_selection_btn.setEnabled(bool(label_ids))
         if label_ids:
             self._apply_highlight(labels_layer, label_ids)
-        elif self._highlighted_labels_layer is not None:
-            self._highlighted_labels_layer.colormap = self._orig_colormap
-            self._highlighted_labels_layer = None
-            self._orig_colormap = None
+            self._highlight_related(labels_layer, label_ids)
+        else:
+            if self._highlighted_labels_layer is not None:
+                self._highlighted_labels_layer.colormap = self._orig_colormap
+                self._highlighted_labels_layer = None
+                self._orig_colormap = None
+            self._restore_related()
 
     def _apply_highlight(self, labels_layer, label_ids: set) -> None:
         """Recolor *labels_layer* so only *label_ids* show at full color;
@@ -1078,6 +1088,87 @@ class MeasureWidget(QWidget):
         # napari's own default of fully transparent for unlisted keys.
         color_dict[None] = dim
         labels_layer.colormap = DirectLabelColormap(color_dict=color_dict)
+
+    def _related_table(self, layer) -> "pd.DataFrame | None":
+        """The patchworks table of another Labels layer (cached)."""
+        if layer.name not in self._related_tables:
+            group = _patchworks.label_group(layer)
+            table = None
+            if group:
+                try:
+                    table = _patchworks.read_table(group)
+                except ValueError:
+                    table = None
+            self._related_tables[layer.name] = table
+        return self._related_tables[layer.name]
+
+    def related_objects(self, labels_layer, label_ids: set) -> dict:
+        """Objects of *other* Labels layers related to *label_ids*.
+
+        Parents come from this table's ``<layer>_id`` columns (a cilium's
+        cell); children from the other layers' patchworks tables naming
+        this layer (a cell's nuclei and cilia). Returns ``{layer name:
+        (role, ids)}`` with role ``"parent"`` or ``"child"``.
+        """
+        from napari.layers import Labels
+
+        others = {
+            layer.name: layer
+            for layer in self._viewer.layers
+            if isinstance(layer, Labels) and layer is not labels_layer
+        }
+        out: dict = {}
+        if self._table is None:
+            return out
+        rows = self._table.loc[[i for i in label_ids if i in self._table.index]]
+        for name, col in _patchworks.parent_columns(
+            self._table, others
+        ).items():
+            ids = {int(v) for v in rows[col].dropna() if int(v) != 0}
+            if ids:
+                out[name] = ("parent", ids)
+        for name, layer in others.items():
+            if name in out:
+                continue
+            table = self._related_table(layer)
+            col = f"{labels_layer.name}_id"
+            if table is None or col not in table.columns:
+                continue
+            ids = {int(i) for i in table.index[table[col].isin(label_ids)]}
+            if ids:
+                out[name] = ("child", ids)
+        return out
+
+    def _highlight_related(self, labels_layer, label_ids: set) -> None:
+        """Show the selection's parents (cyan) and children (magenta) in
+        their own Labels layers, everything else there dimmed."""
+        from napari.utils.colormaps import DirectLabelColormap
+
+        self._restore_related()
+        colours = {
+            "parent": np.array([0.0, 1.0, 1.0, 1.0], dtype="float32"),
+            "child": np.array([1.0, 0.0, 1.0, 1.0], dtype="float32"),
+        }
+        dim = np.array([0.3, 0.3, 0.3, 0.15], dtype="float32")
+        for name, (role, ids) in self.related_objects(
+            labels_layer, label_ids
+        ).items():
+            layer = self._viewer.layers[name]
+            self._related_originals[name] = layer.colormap
+            known = self._related_table(layer)
+            color_dict = (
+                {int(i): dim for i in known.index} if known is not None else {}
+            )
+            color_dict.update({i: colours[role] for i in ids})
+            color_dict[0] = np.zeros(4, dtype="float32")
+            color_dict[None] = dim
+            layer.colormap = DirectLabelColormap(color_dict=color_dict)
+
+    def _restore_related(self) -> None:
+        for name, cmap in self._related_originals.items():
+            if name in self._viewer.layers:
+                self._viewer.layers[name].colormap = cmap
+        self._related_originals = {}
 
     def _on_clear_selection_clicked(self) -> None:
         """Deselect every row — triggers :meth:`_on_result_selection_changed`,
