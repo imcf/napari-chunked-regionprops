@@ -55,6 +55,14 @@ class _NumericTableWidgetItem(QTableWidgetItem):
             return super().__lt__(other)
 
 
+def _cell_text(value) -> str:
+    """A table cell: numbers to 4 significant digits, text as is (a
+    patchworks table carries text columns: review status, position)."""
+    if isinstance(value, (int, float, np.integer, np.floating)):
+        return f"{value:.4g}"
+    return "" if value is None else str(value)
+
+
 def _level_data(layer, level: int):
     """Return one dask array from a (possibly multiscale) layer's data."""
     data = layer.data
@@ -758,7 +766,7 @@ class MeasureWidget(QWidget):
             )
             for col, value in enumerate(values, start=1):
                 self.results_table.setItem(
-                    row, col, _NumericTableWidgetItem(f"{value:.4g}")
+                    row, col, _NumericTableWidgetItem(_cell_text(value))
                 )
         self.results_table.setSortingEnabled(True)
 

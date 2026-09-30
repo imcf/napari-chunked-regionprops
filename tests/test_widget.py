@@ -711,3 +711,21 @@ def test_widget_measure_incompatible_shape_shows_error(
     assert "bogus" in errors[0]
     assert widget._table is None
     assert widget._worker is None
+
+
+def test_widget_shows_text_columns(make_napari_viewer, tmp_path):
+    """A reloaded table may carry text (e.g. a review status); the results
+    table shows it as is instead of failing to format it as a number."""
+    import pandas as pd
+
+    viewer = make_napari_viewer()
+    _add_layers(viewer)
+    widget = MeasureWidget(viewer)
+    path = tmp_path / "t.csv"
+    pd.DataFrame(
+        {"label": [1, 2], "area_voxels": [4, 4], "qc": ["ok", "fixed"]}
+    ).to_csv(path, index=False)
+    widget.reload_path_edit.setText(str(path))
+    widget._on_reload_clicked()
+    assert widget.results_table.item(1, 2).text() == "fixed"
+    assert widget.results_table.item(0, 1).text() == "4"
