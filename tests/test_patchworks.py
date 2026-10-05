@@ -7,8 +7,8 @@ import pytest
 
 zarr = pytest.importorskip("zarr")
 
-from napari_chunked_regionprops import _patchworks  # noqa: E402
-from napari_chunked_regionprops._widget import (  # noqa: E402
+from napari_chunked_regionprops import _patchworks
+from napari_chunked_regionprops._widget import (
     MeasureWidget,
     _ids_hint,
 )
@@ -19,7 +19,7 @@ def _write(store, name, lab, columns):
     root = zarr.open_group(str(store), mode="a")
     group = root.require_group(f"labels/{name}")
     group.attrs["multiscales"] = [{"datasets": [{"path": "0"}]}]
-    group.attrs["n_objects"] = int(len(columns["label"]))
+    group.attrs["n_objects"] = len(columns["label"])
     arr = group.create_array("0", shape=lab.shape, dtype=lab.dtype)
     arr[...] = lab
     table = group.create_group("table")
@@ -31,7 +31,7 @@ def _write(store, name, lab, columns):
     table.attrs["patchworks_table"] = {
         "labels": {
             "created": None,
-            "n_objects": int(len(columns["label"])),
+            "n_objects": len(columns["label"]),
             "shape": list(lab.shape),
         },
         "columns": list(columns),
@@ -225,7 +225,7 @@ def test_corrected_view_with_patchworks(store):
     try:
         rv = patchworks.Review(str(s))
         rv.decide("nuclei", 1, "wrong")
-    except Exception as exc:  # pragma: no cover - patchworks versions
+    except Exception as exc:  # noqa: BLE001  # pragma: no cover - patchworks versions
         pytest.skip(f"patchworks review unavailable: {exc}")
     table = _patchworks.read_table(f"{s}/labels/nuclei")
     assert list(table.index) == [2]

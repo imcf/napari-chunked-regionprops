@@ -15,9 +15,15 @@ jobs:
       - name: ruff check
         uses: astral-sh/ruff-action@v3
         with:
+          # Pinned: an unpinned ruff picks up each release's new default
+          # rules, which failed this job from one day to the next.
+          version: "0.16.10"
           args: "check"
 
       - name: ruff format --check
         uses: astral-sh/ruff-action@v3
         with:
+          # Pinned: an unpinned ruff picks up each release's new default
+          # rules, which failed this job from one day to the next.
+          version: "0.16.10"
           args: "format --check"

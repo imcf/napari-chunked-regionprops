@@ -16,4 +16,4 @@ try:
 except PackageNotFoundError:  # not installed (e.g. running from a checkout)
     __version__ = "0+unknown"
 
-__all__ = ["measure_labels", "available_stats"]
+__all__ = ["available_stats", "measure_labels"]

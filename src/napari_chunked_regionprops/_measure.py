@@ -14,7 +14,8 @@ from __future__ import annotations
 import math
 import os
 import threading
-from typing import Any, Generator, Sequence
+from collections.abc import Generator, Sequence
+from typing import Any
 
 import dask
 import dask.array as da
@@ -95,7 +96,7 @@ class _StateProgress(Callback):
     ``running``/``finished``).
     """
 
-    def __init__(self, state: "_ProgressState"):
+    def __init__(self, state: _ProgressState):
         self._state = state
 
     def _start_state(self, dsk, state):
@@ -166,7 +167,7 @@ def _compute_with_progress(
                 result_box["value"] = dask.compute(
                     *lazy_values, num_workers=num_workers
                 )
-        except BaseException as exc:  # re-raised on the caller's thread below
+        except BaseException as exc:  # noqa: BLE001 - re-raised on the caller's thread below
             error_box["error"] = exc
         finally:
             done_event.set()
@@ -267,10 +268,10 @@ _STAT_WANTS: dict[str, tuple[str, ...]] = {
 
 def _chunk_partial(
     label_chunk: np.ndarray,
-    image_chunk: "np.ndarray | None",
+    image_chunk: np.ndarray | None,
     offset: tuple[int, ...],
     want: frozenset[str],
-) -> "dict[str, np.ndarray] | None":
+) -> dict[str, np.ndarray] | None:
     """Aggregate one chunk's voxels into small per-local-id partial sums.
 
     The fix for the per-object-id task blowup an earlier version of this
@@ -362,7 +363,7 @@ def _chunk_partial(
 
 
 def _merge_partials(
-    partials: "list[dict[str, np.ndarray] | None]",
+    partials: list[dict[str, np.ndarray] | None],
     ids: np.ndarray,
     stats: Sequence[str],
     ndim: int,
@@ -453,7 +454,7 @@ def _merge_partials(
 
 def _lazy_measure(
     image: da.Array, labels: da.Array, ids: np.ndarray, stats: Sequence[str]
-) -> "dask.delayed.Delayed":
+) -> dask.delayed.Delayed:
     """Build the lazy chunk-map + single-merge graph for *stats*.
 
     Parameters

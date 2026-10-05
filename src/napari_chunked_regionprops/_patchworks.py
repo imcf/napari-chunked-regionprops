@@ -23,7 +23,7 @@ decisions applied, children counted, shape and position derived).
 from __future__ import annotations
 
 import logging
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
@@ -38,7 +38,7 @@ _TABLE_KEY = "patchworks_table"
 _PROVENANCE_KEY = "patchworks"
 
 
-def label_group(layer) -> Optional[str]:
+def label_group(layer) -> str | None:
     """The patchworks label group a Labels layer shows, if it has a table.
 
     From the metadata patchworks' viewer sets, or else from the layer's
@@ -62,7 +62,7 @@ def label_group(layer) -> Optional[str]:
 def has_table(group: str) -> bool:
     try:
         return _TABLE_KEY in _open(f"{group}/table").attrs
-    except Exception:
+    except Exception:  # noqa: BLE001 - any unreadable store: no table
         return False
 
 
@@ -99,18 +99,18 @@ def is_current(group: str) -> bool:
     try:
         meta = dict(_open(f"{group}/table").attrs[_TABLE_KEY])
         return meta.get("labels") == _fingerprint(_open(group))
-    except Exception:
+    except Exception:  # noqa: BLE001 - unreadable: treated as stale
         return False
 
 
-def raw_ids(group: str) -> Optional[np.ndarray]:
+def raw_ids(group: str) -> np.ndarray | None:
     """Every object id present in the label image, from its table: the
     exact id set, so measuring needs no scan of the volume for it."""
     if not is_current(group):
         return None
     try:
         return np.asarray(_open(f"{group}/table")["label"][...], dtype="int64")
-    except Exception:
+    except Exception:  # noqa: BLE001 - no usable ids: scan the volume
         return None
 
 
@@ -121,7 +121,7 @@ def _split(group: str) -> tuple[str, str]:
     return store, name
 
 
-def read_table(group: str, *, corrected: bool = True) -> "pd.DataFrame":
+def read_table(group: str, *, corrected: bool = True) -> pd.DataFrame:
     """The table of *group* as a DataFrame indexed by ``label``.
 
     With *corrected* and patchworks installed, the review's corrected view
@@ -170,7 +170,7 @@ def read_table(group: str, *, corrected: bool = True) -> "pd.DataFrame":
     return df
 
 
-def parent_columns(table: "pd.DataFrame", layer_names) -> dict[str, str]:
+def parent_columns(table: pd.DataFrame, layer_names) -> dict[str, str]:
     """``{parent layer name: column}`` for this table's parent-id columns
     that name a Labels layer in the viewer (``cyto_labels_id`` ->
     ``cyto_labels``)."""

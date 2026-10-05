@@ -93,7 +93,7 @@ def _channel_slices(name: str, data, labels_shape: tuple[int, ...]):
     )
 
 
-def _sequential_ids_hint(labels_layer, level: int) -> "np.ndarray | None":
+def _sequential_ids_hint(labels_layer, level: int) -> np.ndarray | None:
     """Build the exact id array from a Labels layer's known-object-count hint.
 
     patchworks' ``view_in_napari`` sets ``layer.metadata["n_objects"]`` /
@@ -127,7 +127,7 @@ def _sequential_ids_hint(labels_layer, level: int) -> "np.ndarray | None":
     return np.arange(1, int(meta["n_objects"]) + 1, dtype="int64")
 
 
-def _ids_hint(labels_layer, level: int) -> "np.ndarray | None":
+def _ids_hint(labels_layer, level: int) -> np.ndarray | None:
     """The exact id set of a Labels layer, when known without a scan.
 
     From the sequential-labels hint (:func:`_sequential_ids_hint`), or from
@@ -142,7 +142,7 @@ def _ids_hint(labels_layer, level: int) -> "np.ndarray | None":
     return _patchworks.raw_ids(group) if group else None
 
 
-def _read_table_file(path) -> "pd.DataFrame":
+def _read_table_file(path) -> pd.DataFrame:
     """A saved measurement table: ``.parquet`` or ``.csv``, by extension."""
     if str(path).lower().endswith(".parquet"):
         table = pd.read_parquet(path)
@@ -152,7 +152,7 @@ def _read_table_file(path) -> "pd.DataFrame":
     return pd.read_csv(path, index_col="label")
 
 
-def _write_table_file(table: "pd.DataFrame", path) -> None:
+def _write_table_file(table: pd.DataFrame, path) -> None:
     if str(path).lower().endswith(".parquet"):
         table.to_parquet(path)
     else:
@@ -176,7 +176,7 @@ class MeasureWidget(QWidget):
     prior measurement's CSV instead of recomputing it.
     """
 
-    def __init__(self, napari_viewer: "napari.viewer.Viewer"):
+    def __init__(self, napari_viewer: napari.viewer.Viewer):
         super().__init__()
         self._viewer = napari_viewer
         self._table = None  # last computed pandas.DataFrame
@@ -190,7 +190,7 @@ class MeasureWidget(QWidget):
         # only) and never evicts — fine for a session's worth of measurement
         # results (tiny compared to the images). Cross-session reuse is
         # handled separately by the disk manifest (_disk_cache_key et al.).
-        self._cache: dict[tuple, "pd.DataFrame"] = {}
+        self._cache: dict[tuple, pd.DataFrame] = {}
         # Where auto-save (see _on_measured) writes CSVs. None -> cwd, until
         # the user manually picks a location once via "Save CSV…", which is
         # remembered for subsequent auto-saves too.
@@ -720,7 +720,7 @@ class MeasureWidget(QWidget):
 
     def _on_measured(
         self,
-        table: "pd.DataFrame",
+        table: pd.DataFrame,
         *,
         cache_key: tuple,
         cache_note: str | None = None,
@@ -769,9 +769,7 @@ class MeasureWidget(QWidget):
         self._table_layer_name = labels_layer.name if labels_layer else None
         self._wire_labels_features(labels_layer, table)
 
-    def _wire_labels_features(
-        self, labels_layer, table: "pd.DataFrame"
-    ) -> None:
+    def _wire_labels_features(self, labels_layer, table: pd.DataFrame) -> None:
         """Feed *table* into the Labels layer's per-label features/coloring."""
         if labels_layer is None or table.empty:
             return
@@ -779,7 +777,7 @@ class MeasureWidget(QWidget):
         features["label"] = features["label"].astype(int)
         labels_layer.features = features
 
-    def _auto_save_csv(self, table: "pd.DataFrame") -> Path:
+    def _auto_save_csv(self, table: pd.DataFrame) -> Path:
         """Write *table* to CSV without prompting, every time a measurement finishes.
 
         Parameters
@@ -890,7 +888,7 @@ class MeasureWidget(QWidget):
                 )
         self.results_table.setSortingEnabled(True)
 
-    def _refresh_colormap_columns(self, table: "pd.DataFrame") -> None:
+    def _refresh_colormap_columns(self, table: pd.DataFrame) -> None:
         """Repopulate the "Color by measurement" column picker with
         *table*'s numeric columns, keeping the previous selection if it's
         still there."""
@@ -919,9 +917,8 @@ class MeasureWidget(QWidget):
             self.colormap_max_label.setText("")
             return
 
-        from qtpy.QtGui import QImage, QPixmap
-
         from napari.utils.colormaps import ensure_colormap
+        from qtpy.QtGui import QImage, QPixmap
 
         width = 200
         cmap = ensure_colormap(self.colormap_name_combo.currentText())
@@ -1089,7 +1086,7 @@ class MeasureWidget(QWidget):
         color_dict[None] = dim
         labels_layer.colormap = DirectLabelColormap(color_dict=color_dict)
 
-    def _related_table(self, layer) -> "pd.DataFrame | None":
+    def _related_table(self, layer) -> pd.DataFrame | None:
         """The patchworks table of another Labels layer (cached)."""
         if layer.name not in self._related_tables:
             group = _patchworks.label_group(layer)
@@ -1211,7 +1208,7 @@ class MeasureWidget(QWidget):
         if ndim == 3:
             current_step = list(self._viewer.dims.current_step)
             if len(current_step) >= 3:
-                current_step[-3] = int(round(row["centroid_z"]))
+                current_step[-3] = int(round(row["centroid_z"]))  # noqa: RUF046 - numpy floats round to floats
                 self._viewer.dims.current_step = current_step
 
         axes = "zyx"[-ndim:]
