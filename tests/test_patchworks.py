@@ -124,6 +124,31 @@ def test_table_found_from_metadata_or_source_path(store):
     assert _patchworks.label_group(none) is None
 
 
+def test_table_found_inside_a_zip_bundle(store, tmp_path):
+    """patchworks' viewer tags a bundled store as ``bundle.zip/labels/..``:
+    a path through a file, read in place."""
+    import os
+    import zipfile
+
+    s, _ = store
+    bundle = tmp_path / "s.zarr.zip"
+    with zipfile.ZipFile(bundle, "w") as archive:
+        for here, _, files in os.walk(s):
+            for f in files:
+                path = os.path.join(here, f)
+                archive.write(path, os.path.relpath(path, tmp_path))
+    tagged = types.SimpleNamespace(
+        name="cells",
+        metadata={"patchworks_labels": f"{bundle}/labels/cells"},
+        source=None,
+    )
+    group = _patchworks.label_group(tagged)
+    assert group == f"{bundle}/labels/cells"
+    table = _patchworks.read_table(group, corrected=False)
+    assert list(table.index) == [3, 7]
+    assert list(_patchworks.raw_ids(group)) == [3, 7]
+
+
 def test_stale_table_is_refused(store):
     s, _ = store
     group = f"{s}/labels/cells"
