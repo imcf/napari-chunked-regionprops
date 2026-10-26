@@ -23,6 +23,8 @@ decisions applied, children counted, shape and position derived).
 from __future__ import annotations
 
 import logging
+import re
+import zipfile
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -66,10 +68,31 @@ def has_table(group: str) -> bool:
         return False
 
 
+#: A ``.zip`` path component: the archive name, then the end or a separator.
+_ZIP_PART = re.compile(r"^(.*?\.zip)(?=$|[/\\])(.*)$", re.IGNORECASE)
+
+
 def _open(path: str):
+    """Open a group read-only, also *inside* a zipped store.
+
+    patchworks bundles a store as one ``.zip`` holding ``<name>.zarr/...``,
+    and its viewer points a layer at ``bundle.zip/labels/<name>``: a path
+    through a file, which a plain ``zarr.open_group`` cannot follow.
+    """
     import zarr
 
-    return zarr.open_group(path, mode="r")
+    m = _ZIP_PART.match(str(path))
+    if m is None:
+        return zarr.open_group(path, mode="r")
+    archive, inner = m.group(1), m.group(2).replace("\\", "/").strip("/")
+    with zipfile.ZipFile(archive) as zf:
+        tops = {n.split("/", 1)[0] for n in zf.namelist() if "/" in n}
+    # One top-level folder: the bundled store. Otherwise the zip *is* it.
+    parts = [tops.pop()] if len(tops) == 1 else []
+    prefix = "/".join(parts + ([inner] if inner else []))
+    return zarr.open_group(
+        zarr.storage.ZipStore(archive, mode="r"), path=prefix, mode="r"
+    )
 
 
 def _fingerprint(group) -> dict[str, Any]:
