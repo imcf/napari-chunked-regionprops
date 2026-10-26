@@ -22,7 +22,9 @@ decisions applied, children counted, shape and position derived).
 
 from __future__ import annotations
 
+import functools
 import logging
+import re
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
@@ -67,9 +69,45 @@ def has_table(group: str) -> bool:
 
 
 def _open(path: str):
+    """``zarr.open_group(path)``, also for a group inside a ``.zip`` bundle.
+
+    patchworks packs a finished store as ``image.zarr.zip`` holding
+    ``image.zarr/...``, and its viewer names the labels as a path inside it
+    (``image.zarr.zip/labels/cells``), which plain zarr cannot open.
+    """
     import zarr
 
-    return zarr.open_group(path, mode="r")
+    match = _ZIP.match(str(path))
+    if match is None:
+        return zarr.open_group(path, mode="r")
+    archive, inner = match.group(1), match.group(2).replace("\\", "/")
+    store, top = _zip_store(archive)
+    inner = "/".join(p for p in (top, inner.strip("/")) if p)
+    return zarr.open_group(store, path=inner, mode="r")
+
+
+# "<archive>.zip" then, optionally, a group path inside it (either slash:
+# a Windows path joined with "/labels/..." mixes them).
+_ZIP = re.compile(r"^(.*?\.zip)(?:[/\\](.*))?$", re.IGNORECASE)
+
+
+@functools.lru_cache(maxsize=8)
+def _zip_store(archive: str):
+    """A read-only store on *archive*, and the one store folder inside it
+    (``""`` when the store is at the archive's root)."""
+    import zipfile
+
+    import zarr
+
+    with zipfile.ZipFile(archive) as zf:
+        names = zf.namelist()
+    meta = ("zarr.json", ".zgroup", ".zattrs")
+    top = ""
+    if not any(n in meta for n in names):
+        tops = {n.split("/", 1)[0] for n in names if "/" in n}
+        if len(tops) == 1:
+            top = tops.pop()
+    return zarr.storage.ZipStore(archive, mode="r"), top
 
 
 def _fingerprint(group) -> dict[str, Any]:
