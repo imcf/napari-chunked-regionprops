@@ -124,6 +124,31 @@ def test_table_found_from_metadata_or_source_path(store):
     assert _patchworks.label_group(none) is None
 
 
+def test_table_read_inside_a_zip_bundle(store):
+    """patchworks packs a finished store as image.zarr.zip holding
+    image.zarr/..., and names the labels as a path inside the archive."""
+    import shutil
+
+    s, _ = store
+    bundle = shutil.make_archive(
+        str(s), "zip", root_dir=s.parent, base_dir=s.name
+    )
+    assert bundle.endswith("s.zarr.zip")
+    tagged = types.SimpleNamespace(
+        name="cells",
+        metadata={"patchworks_labels": f"{bundle}/labels/cells"},
+        source=None,
+    )
+    group = _patchworks.label_group(tagged)
+    assert group == f"{bundle}/labels/cells"
+    assert _patchworks.is_current(group)
+    assert list(_patchworks.raw_ids(group)) == [3, 7]
+    table = _patchworks.read_table(group, corrected=False)
+    assert list(table.index) == [3, 7]
+    # A Windows path joined with "/labels/..." mixes the separators
+    assert _patchworks.has_table(bundle + "\\labels\\cilia")
+
+
 def test_table_found_inside_a_zip_bundle(store, tmp_path):
     """patchworks' viewer tags a bundled store as ``bundle.zip/labels/..``:
     a path through a file, read in place."""
@@ -147,6 +172,16 @@ def test_table_found_inside_a_zip_bundle(store, tmp_path):
     table = _patchworks.read_table(group, corrected=False)
     assert list(table.index) == [3, 7]
     assert list(_patchworks.raw_ids(group)) == [3, 7]
+
+
+def test_store_at_the_root_of_a_zip(store, tmp_path):
+    """A zip holding the store's own files at its root, with ``labels/`` as
+    its only folder, is the store itself, not a store named ``labels``."""
+    import shutil
+
+    s, _ = store
+    bundle = shutil.make_archive(str(tmp_path / "flat"), "zip", root_dir=s)
+    assert _patchworks.has_table(f"{bundle}/labels/cells")
 
 
 def test_stale_table_is_refused(store):
